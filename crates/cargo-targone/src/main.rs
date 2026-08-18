@@ -2,6 +2,11 @@
 //!
 //! `report` is read-only. `gc` is dry-run by DEFAULT; only `--apply` deletes,
 //! and then only under Cargo's lock protocol with an append-only audit log.
+//! `scan` adopts projects into the machine registry; `schedule` wires the OS
+//! scheduler for set-and-forget recurrence.
+
+mod config;
+mod schedule;
 
 use std::fs;
 use std::io::Write;
@@ -10,7 +15,10 @@ use std::process::ExitCode;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use clap::{Parser, Subcommand};
-use targone_core::{discover, scan_target_dir, sweep_profile, SweepOutcome, TargetReport};
+use targone_core::{
+    discover, scan_target_dir, select_for_budget, sweep_profile, Registry, SweepOutcome,
+    TargetReport,
+};
 
 #[derive(Parser)]
 #[command(
@@ -48,6 +56,28 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Find projects under the given roots and adopt them into the registry.
+    Scan {
+        /// Roots to search for Cargo projects.
+        roots: Vec<PathBuf>,
+    },
+    /// Manage the OS-scheduled recurring sweep.
+    Schedule {
+        #[command(subcommand)]
+        action: ScheduleAction,
+    },
+}
+
+#[derive(Subcommand)]
+enum ScheduleAction {
+    /// Register the per-user scheduled task/timer (idempotent).
+    Install,
+    /// Remove the scheduled task/timer.
+    Uninstall,
+    /// Show scheduler state and the last scheduled run.
+    Status,
+    /// Execute one scheduled sweep (what the scheduler invokes).
+    Run,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
@@ -85,7 +115,39 @@ fn main() -> ExitCode {
             tier,
             json,
         } => gc(paths, apply, &tier, json),
+        Command::Scan { roots } => scan_cmd(roots),
+        Command::Schedule { action } => match action {
+            ScheduleAction::Install => print_result(schedule::install()),
+            ScheduleAction::Uninstall => print_result(schedule::uninstall()),
+            ScheduleAction::Status => schedule_status(),
+            ScheduleAction::Run => scheduled_run(),
+        },
     }
+}
+
+fn print_result(r: Result<String, String>) -> ExitCode {
+    match r {
+        Ok(msg) => {
+            println!("{msg}");
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            eprintln!("error: {e}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn scan_all(mut paths: Vec<PathBuf>) -> Vec<TargetReport> {
+    if paths.is_empty() {
+        paths.push(PathBuf::from("."));
+    }
+    let dirs = discover(&paths);
+    let mut reports: Vec<TargetReport> = dirs.iter().map(scan_target_dir).collect();
+    // Descending by reclaimable bytes — the order a budget-driven sweep
+    // processes them (F-001: heavy-tail distribution).
+    reports.sort_by_key(|r| std::cmp::Reverse(r.reclaimable_bytes()));
+    reports
 }
 
 /// Restrict every profile's plan (and derived estimates) to the given tiers.
@@ -105,18 +167,6 @@ fn filter_tiers(reports: &mut [TargetReport], tiers: &[TierArg]) {
             }
         }
     }
-}
-
-fn scan_all(mut paths: Vec<PathBuf>) -> Vec<TargetReport> {
-    if paths.is_empty() {
-        paths.push(PathBuf::from("."));
-    }
-    let dirs = discover(&paths);
-    let mut reports: Vec<TargetReport> = dirs.iter().map(scan_target_dir).collect();
-    // Descending by reclaimable bytes — the order a budget-driven sweep
-    // processes them (F-001: heavy-tail distribution).
-    reports.sort_by_key(|r| std::cmp::Reverse(r.reclaimable_bytes()));
-    reports
 }
 
 fn report(paths: Vec<PathBuf>, json: bool) -> ExitCode {
@@ -169,6 +219,68 @@ fn print_table(reports: &[TargetReport]) {
     );
 }
 
+#[derive(serde::Serialize)]
+struct DirSummary {
+    root: PathBuf,
+    freed_bytes: u64,
+    notes: Vec<String>,
+}
+
+#[derive(Default, serde::Serialize)]
+struct SweepTotals {
+    freed_bytes: u64,
+    residue_paths: u64,
+    profiles_skipped_locked: u64,
+    dirs: Vec<DirSummary>,
+}
+
+/// Sweep every profile of every report, in order. Shared by `gc --apply`
+/// and `schedule run`.
+fn run_sweep(reports: &[TargetReport], run_id: &str, audit: &mut dyn Write) -> SweepTotals {
+    let mut totals = SweepTotals::default();
+    for r in reports {
+        let mut dir_freed = 0u64;
+        let mut notes: Vec<String> = Vec::new();
+        for p in &r.profiles {
+            match sweep_profile(p, run_id, audit) {
+                Ok(SweepOutcome {
+                    freed_bytes,
+                    residue_paths,
+                    skipped_locked: locked,
+                    refused,
+                    items_skipped,
+                    ..
+                }) => {
+                    dir_freed += freed_bytes;
+                    totals.residue_paths += residue_paths;
+                    if locked {
+                        totals.profiles_skipped_locked += 1;
+                        notes.push(format!("{}: build in progress, skipped", p.path.display()));
+                    }
+                    if let Some(reason) = refused {
+                        notes.push(format!("{}: refused ({reason})", p.path.display()));
+                    }
+                    if items_skipped > 0 {
+                        notes.push(format!(
+                            "{}: {} items skipped (session locks)",
+                            p.path.display(),
+                            items_skipped
+                        ));
+                    }
+                }
+                Err(e) => notes.push(format!("{}: error: {e}", p.path.display())),
+            }
+        }
+        totals.freed_bytes += dir_freed;
+        totals.dirs.push(DirSummary {
+            root: r.root.clone(),
+            freed_bytes: dir_freed,
+            notes,
+        });
+    }
+    totals
+}
+
 fn gc(paths: Vec<PathBuf>, apply: bool, tiers: &[TierArg], json: bool) -> ExitCode {
     let mut reports = scan_all(paths);
     filter_tiers(&mut reports, tiers);
@@ -192,13 +304,7 @@ fn gc(paths: Vec<PathBuf>, apply: bool, tiers: &[TierArg], json: bool) -> ExitCo
         return ExitCode::SUCCESS;
     }
 
-    let run_id = format!(
-        "gc-{}",
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or(0)
-    );
+    let run_id = run_id("gc");
     let mut audit = match open_audit_log() {
         Ok(a) => a,
         Err(e) => {
@@ -206,99 +312,211 @@ fn gc(paths: Vec<PathBuf>, apply: bool, tiers: &[TierArg], json: bool) -> ExitCo
             return ExitCode::FAILURE;
         }
     };
-
-    #[derive(serde::Serialize)]
-    struct DirSummary {
-        root: PathBuf,
-        freed_bytes: u64,
-        notes: Vec<String>,
-    }
-
-    let mut freed = 0u64;
-    let mut residue = 0u64;
-    let mut skipped_locked = 0u64;
-    let mut summaries: Vec<DirSummary> = Vec::new();
-    for r in &reports {
-        let mut dir_freed = 0u64;
-        let mut notes: Vec<String> = Vec::new();
-        for p in &r.profiles {
-            match sweep_profile(p, &run_id, &mut audit) {
-                Ok(SweepOutcome {
-                    freed_bytes,
-                    residue_paths,
-                    skipped_locked: locked,
-                    refused,
-                    items_skipped,
-                    ..
-                }) => {
-                    dir_freed += freed_bytes;
-                    residue += residue_paths;
-                    if locked {
-                        skipped_locked += 1;
-                        notes.push(format!("{}: build in progress, skipped", p.path.display()));
-                    }
-                    if let Some(reason) = refused {
-                        notes.push(format!("{}: refused ({reason})", p.path.display()));
-                    }
-                    if items_skipped > 0 {
-                        notes.push(format!(
-                            "{}: {} items skipped (session locks)",
-                            p.path.display(),
-                            items_skipped
-                        ));
-                    }
-                }
-                Err(e) => notes.push(format!("{}: error: {e}", p.path.display())),
-            }
-        }
-        freed += dir_freed;
-        if json {
-            summaries.push(DirSummary {
-                root: r.root.clone(),
-                freed_bytes: dir_freed,
-                notes,
-            });
-        } else {
-            println!("{:>10} freed  {}", human(dir_freed), r.root.display());
-            for n in notes {
-                println!("            note: {n}");
-            }
-        }
-    }
+    let totals = run_sweep(&reports, &run_id, &mut audit);
+    let _ = audit.flush();
     if json {
-        let summary = serde_json::json!({
-            "run": run_id,
-            "freed_bytes": freed,
-            "residue_paths": residue,
-            "profiles_skipped_locked": skipped_locked,
-            "dirs": summaries,
-        });
+        let summary = serde_json::json!({ "run": run_id, "totals": totals });
         match serde_json::to_string_pretty(&summary) {
             Ok(s) => println!("{s}"),
             Err(e) => eprintln!("error: failed to serialize summary: {e}"),
         }
-        let _ = audit.flush();
         return ExitCode::SUCCESS;
+    }
+    for d in &totals.dirs {
+        println!("{:>10} freed  {}", human(d.freed_bytes), d.root.display());
+        for n in &d.notes {
+            println!("            note: {n}");
+        }
     }
     println!(
         "{:>10} freed  TOTAL ({} dirs; {} profiles skipped by live builds; {} residue paths)",
-        human(freed),
-        reports.len(),
-        skipped_locked,
-        residue
+        human(totals.freed_bytes),
+        totals.dirs.len(),
+        totals.profiles_skipped_locked,
+        totals.residue_paths
     );
-    let _ = audit.flush();
     ExitCode::SUCCESS
+}
+
+/// Adopt every project found under `roots` into the machine registry and
+/// report orphaned registry entries (project gone, target dirs reclaimable).
+fn scan_cmd(roots: Vec<PathBuf>) -> ExitCode {
+    let reports = scan_all(roots);
+    let registry = Registry::open(targone_dir().join("registry.jsonl"));
+    let mut adopted = 0u64;
+    for r in &reports {
+        // Conventional `X/target` belongs to project X; a renamed/central
+        // build dir is registered as itself.
+        let project = if r
+            .root
+            .file_name()
+            .is_some_and(|n| n.eq_ignore_ascii_case("target"))
+        {
+            r.root.parent().unwrap_or(&r.root).to_path_buf()
+        } else {
+            r.root.clone()
+        };
+        match registry.record(&project) {
+            Ok(()) => adopted += 1,
+            Err(e) => eprintln!("warn: could not record {}: {e}", project.display()),
+        }
+    }
+    println!(
+        "adopted {adopted} project(s) into {}",
+        registry.path().display()
+    );
+    match registry.entries() {
+        Ok(entries) => {
+            let orphans: Vec<_> = entries.iter().filter(|e| e.is_orphan()).collect();
+            println!(
+                "registry now holds {} project(s), {} orphaned",
+                entries.len(),
+                orphans.len()
+            );
+            for o in orphans {
+                println!(
+                    "  orphan: {} (project gone — target dirs eligible for full reclaim)",
+                    o.root.display()
+                );
+            }
+        }
+        Err(e) => eprintln!("warn: cannot read registry: {e}"),
+    }
+    print_table(&reports);
+    ExitCode::SUCCESS
+}
+
+fn schedule_status() -> ExitCode {
+    match schedule::status() {
+        Ok(s) => println!("scheduler: {s}"),
+        Err(e) => println!("scheduler: error: {e}"),
+    }
+    let last = targone_dir().join("last-run.json");
+    match fs::read_to_string(&last) {
+        Ok(s) => println!("last scheduled run: {s}"),
+        Err(_) => println!("last scheduled run: never"),
+    }
+    ExitCode::SUCCESS
+}
+
+/// One scheduled sweep: config + registry roots, budget-driven selection,
+/// silent success, summary persisted for `schedule status`.
+fn scheduled_run() -> ExitCode {
+    if let Some(reason) = schedule::disabled() {
+        println!("targone: disabled ({reason}) — no-op");
+        return ExitCode::SUCCESS;
+    }
+    let cfg = match config::MachineConfig::load(&targone_dir().join("config.toml")) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("error: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let budget = match cfg.budget_bytes() {
+        Ok(b) => b,
+        Err(e) => {
+            eprintln!("error: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let registry = Registry::open(targone_dir().join("registry.jsonl"));
+    let mut roots = cfg.roots.clone();
+    if let Ok(entries) = registry.entries() {
+        roots.extend(
+            entries
+                .iter()
+                .filter(|e| !e.is_orphan())
+                .map(|e| e.root.clone()),
+        );
+    }
+    roots.sort();
+    roots.dedup();
+    if roots.is_empty() {
+        println!(
+            "targone: nothing to do — add roots to {} or run `cargo targone scan <dirs>`",
+            targone_dir().join("config.toml").display()
+        );
+        return ExitCode::SUCCESS;
+    }
+
+    let reports = scan_all(roots);
+    let pairs: Vec<(u64, u64)> = reports
+        .iter()
+        .map(|r| (r.total_bytes(), r.reclaimable_bytes()))
+        .collect();
+    let (selected, plan) = select_for_budget(&pairs, budget);
+    let chosen: Vec<TargetReport> = {
+        let mut idx: Vec<bool> = vec![false; reports.len()];
+        for i in &selected {
+            idx[*i] = true;
+        }
+        reports
+            .into_iter()
+            .zip(idx)
+            .filter_map(|(r, keep)| keep.then_some(r))
+            .collect()
+    };
+
+    let run_id = run_id("sched");
+    let mut audit = match open_audit_log() {
+        Ok(a) => a,
+        Err(e) => {
+            eprintln!("error: cannot open audit log: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let totals = run_sweep(&chosen, &run_id, &mut audit);
+    let _ = audit.flush();
+
+    let summary = serde_json::json!({
+        "run": run_id,
+        "ts": now_secs(),
+        "budget": budget,
+        "plan": plan,
+        "totals": totals,
+    });
+    if let Ok(s) = serde_json::to_string(&summary) {
+        let _ = fs::write(targone_dir().join("last-run.json"), s);
+    }
+    println!(
+        "targone: freed {} across {} dir(s) ({} skipped by live builds, {} residue){}",
+        human(totals.freed_bytes),
+        totals.dirs.len(),
+        totals.profiles_skipped_locked,
+        totals.residue_paths,
+        if plan.insufficient {
+            " — budget unreachable even sweeping everything"
+        } else {
+            ""
+        }
+    );
+    ExitCode::SUCCESS
+}
+
+fn now_secs() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+fn run_id(prefix: &str) -> String {
+    format!("{prefix}-{}", now_secs())
 }
 
 /// Append-only audit log at `$CARGO_HOME/targone/audit.jsonl`.
 fn open_audit_log() -> std::io::Result<impl Write> {
-    let dir = cargo_home().join("targone");
+    let dir = targone_dir();
     fs::create_dir_all(&dir)?;
     fs::OpenOptions::new()
         .create(true)
         .append(true)
         .open(dir.join("audit.jsonl"))
+}
+
+fn targone_dir() -> PathBuf {
+    cargo_home().join("targone")
 }
 
 fn cargo_home() -> PathBuf {

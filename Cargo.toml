@@ -18,6 +18,7 @@ serde_json = "1"
 clap = { version = "4", features = ["derive"] }
 tempfile = "3"
 remove_dir_all = "1"
+toml = "0.8"
 
 [workspace.lints.rust]
 unsafe_code = "deny"
