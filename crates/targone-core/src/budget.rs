@@ -95,7 +95,11 @@ mod tests {
         assert_eq!(parse_size("1.5 GiB"), Some(1_610_612_736));
         assert_eq!(parse_size("512"), Some(512));
         assert_eq!(parse_size("100 MiB"), Some(104_857_600));
+        assert_eq!(parse_size("2TB"), Some(2_000_000_000_000));
+        assert_eq!(parse_size("1TiB"), Some(1_099_511_627_776));
+        assert_eq!(parse_size("3KB"), Some(3000));
         assert_eq!(parse_size("banana"), None);
+        assert_eq!(parse_size("5xb"), None); // unknown unit
         assert_eq!(parse_size("-5GB"), None);
     }
 

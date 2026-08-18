@@ -25,11 +25,11 @@ mod imp {
 
     pub fn is_network_path(path: &Path) -> bool {
         let Some(Component::Prefix(prefix)) = path.components().next() else {
-            // Relative path: resolve against the current dir's drive.
-            return match std::env::current_dir() {
-                Ok(cwd) if cwd != path => is_network_path(&cwd),
-                _ => false,
-            };
+            // Relative path: resolve against the current dir's drive
+            // (current_dir is always absolute, so this recurses at most once).
+            return std::env::current_dir()
+                .map(|cwd| is_network_path(&cwd))
+                .unwrap_or(false);
         };
         match prefix.kind() {
             Prefix::UNC(..) | Prefix::VerbatimUNC(..) => true,
@@ -133,5 +133,15 @@ mod tests {
     fn unc_paths_are_network() {
         assert!(is_network_path(Path::new(r"\\server\share\target")));
         assert!(is_network_path(Path::new(r"\\?\UNC\server\share\target")));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn relative_and_device_paths() {
+        // Relative: resolved via the current dir's drive (local here).
+        assert!(!is_network_path(Path::new("some/relative/dir")));
+        // Device namespaces are not classifiable — fail toward "not network"
+        // (the sweep layer's own guards handle the rest).
+        assert!(!is_network_path(Path::new(r"\\.\COM1\x")));
     }
 }

@@ -373,8 +373,17 @@ fn gc(
     let totals = run_sweep(&reports, &run_id, &mut audit);
     let _ = audit.flush();
     if json {
-        let summary = serde_json::json!({ "run": run_id, "totals": totals });
-        match serde_json::to_string_pretty(&summary) {
+        // Serialize fallibly: paths with invalid UTF-8 must degrade to an
+        // error line, never a panic (the json! macro unwraps internally).
+        #[derive(serde::Serialize)]
+        struct ApplySummary<'a> {
+            run: &'a str,
+            totals: &'a SweepTotals,
+        }
+        match serde_json::to_string_pretty(&ApplySummary {
+            run: &run_id,
+            totals: &totals,
+        }) {
             Ok(s) => println!("{s}"),
             Err(e) => eprintln!("error: failed to serialize summary: {e}"),
         }
@@ -480,14 +489,15 @@ fn scheduled_run() -> ExitCode {
     };
     let registry = Registry::open(targone_dir().join("registry.jsonl"));
     let mut roots = cfg.roots.clone();
-    if let Ok(entries) = registry.entries() {
-        roots.extend(
-            entries
-                .iter()
-                .filter(|e| !e.is_orphan())
-                .map(|e| e.root.clone()),
-        );
-    }
+    // An unreadable registry degrades to config roots only.
+    roots.extend(
+        registry
+            .entries()
+            .into_iter()
+            .flatten()
+            .filter(|e| !e.is_orphan())
+            .map(|e| e.root),
+    );
     roots.sort();
     roots.dedup();
     if roots.is_empty() {
@@ -528,14 +538,22 @@ fn scheduled_run() -> ExitCode {
     let totals = run_sweep(&chosen, &run_id, &mut audit);
     let _ = audit.flush();
 
-    let summary = serde_json::json!({
-        "run": run_id,
-        "ts": now_secs(),
-        "budget": budget,
-        "plan": plan,
-        "totals": totals,
-    });
-    if let Ok(s) = serde_json::to_string(&summary) {
+    #[derive(serde::Serialize)]
+    struct RunSummary<'a> {
+        run: &'a str,
+        ts: u64,
+        budget: Option<u64>,
+        plan: targone_core::BudgetPlan,
+        totals: &'a SweepTotals,
+    }
+    // Fallible on purpose: invalid-UTF-8 paths must never panic a run.
+    if let Ok(s) = serde_json::to_string(&RunSummary {
+        run: &run_id,
+        ts: now_secs(),
+        budget,
+        plan,
+        totals: &totals,
+    }) {
         let _ = fs::write(targone_dir().join("last-run.json"), s);
     }
     println!(
@@ -601,5 +619,55 @@ fn human(bytes: u64) -> String {
         format!("{bytes} B")
     } else {
         format!("{value:.1} {}", UNITS[unit])
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use targone_core::{ProfileLayout, ProfileReport};
+
+    fn bare_profile(path: PathBuf, layout: ProfileLayout) -> ProfileReport {
+        ProfileReport {
+            path,
+            layout,
+            pools: Default::default(),
+            tiers: Vec::new(),
+            reclaim: Vec::new(),
+            unparsed_kept: 0,
+        }
+    }
+
+    #[test]
+    fn run_sweep_notes_refusals_and_errors() {
+        // A network profile is refused; a profile whose path is a FILE makes
+        // the lock open fail (a genuine sweep error).
+        let refused = TargetReport {
+            root: PathBuf::from(r"\\no-such-host\share\target"),
+            profiles: vec![bare_profile(
+                PathBuf::from(r"\\no-such-host\share\target\debug"),
+                ProfileLayout::LegacyBuild,
+            )],
+            root_pools: Default::default(),
+        };
+        let t = tempfile::tempdir().unwrap();
+        let file_as_profile = t.path().join("iamafile");
+        fs::write(&file_as_profile, b"x").unwrap();
+        let errored = TargetReport {
+            root: t.path().to_path_buf(),
+            profiles: vec![bare_profile(file_as_profile, ProfileLayout::LegacyBuild)],
+            root_pools: Default::default(),
+        };
+        let mut audit = Vec::new();
+        let totals = run_sweep(&[refused, errored], "test", &mut audit);
+        let notes = totals
+            .dirs
+            .iter()
+            .flat_map(|d| d.notes.iter().cloned())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(notes.contains("refused (network filesystem)"), "{notes}");
+        assert!(notes.contains("error:"), "{notes}");
+        assert_eq!(totals.freed_bytes, 0);
     }
 }

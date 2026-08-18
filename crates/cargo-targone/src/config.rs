@@ -69,6 +69,13 @@ mod tests {
     }
 
     #[test]
+    fn unreadable_config_is_an_error() {
+        // Path exists but is a directory: a real I/O error, not defaults.
+        let t = tempfile::tempdir().unwrap();
+        assert!(MachineConfig::load(t.path()).is_err());
+    }
+
+    #[test]
     fn unknown_keys_are_rejected() {
         let t = tempfile::tempdir().unwrap();
         let p = t.path().join("config.toml");

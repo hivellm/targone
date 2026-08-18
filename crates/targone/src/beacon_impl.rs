@@ -104,12 +104,11 @@ pub fn engine_on_path(path_var: Option<&std::ffi::OsStr>) -> bool {
     let Some(path_var) = path_var else {
         return false;
     };
-    let exe = if cfg!(windows) {
-        "cargo-targone.exe"
-    } else {
-        "cargo-targone"
-    };
-    std::env::split_paths(path_var).any(|dir| dir.join(exe).is_file())
+    #[cfg(windows)]
+    const EXE: &str = "cargo-targone.exe";
+    #[cfg(not(windows))]
+    const EXE: &str = "cargo-targone";
+    std::env::split_paths(path_var).any(|dir| dir.join(EXE).is_file())
 }
 
 /// Should the engine-missing hint fire? At most once per day, stamped by the

@@ -146,6 +146,35 @@ mod tests {
     }
 
     #[test]
+    fn v2_probe_skips_files_and_junk_at_pkg_level() {
+        let t = tempfile::tempdir().unwrap();
+        mk(t.path(), &["build/stray-file", "build/serde/junk-name/"]);
+        assert_eq!(probe_profile(t.path()), ProfileLayout::Unknown);
+    }
+
+    #[test]
+    fn cachedir_tag_must_be_a_regular_file() {
+        let t = tempfile::tempdir().unwrap();
+        fs::create_dir_all(t.path().join("CACHEDIR.TAG")).unwrap();
+        assert!(!has_cachedir_tag(t.path()));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn unreadable_cachedir_tag_is_not_a_marker() {
+        use std::os::windows::fs::OpenOptionsExt;
+        let t = tempfile::tempdir().unwrap();
+        let tag = t.path().join("CACHEDIR.TAG");
+        fs::write(&tag, b"Signature: 8a477f597d28d172789f06886806bc55").unwrap();
+        let _holder = fs::OpenOptions::new()
+            .read(true)
+            .share_mode(0)
+            .open(&tag)
+            .unwrap();
+        assert!(!has_cachedir_tag(t.path()));
+    }
+
+    #[test]
     fn cachedir_tag_signature_is_verified() {
         let t = tempfile::tempdir().unwrap();
         assert!(!has_cachedir_tag(t.path()));

@@ -72,6 +72,9 @@ mod tests {
         let line = registry_line(std::path::Path::new(r"E:\code\my proj"), 42);
         // The engine's serde-based reader must parse it.
         assert_eq!(line, r#"{"v":1,"root":"E:\\code\\my proj","ts":42}"#);
+        // Quotes and control characters are escaped, not smuggled.
+        let tricky = registry_line(std::path::Path::new("a\"b\u{1}c"), 7);
+        assert_eq!(tricky, r#"{"v":1,"root":"a\"b\u0001c","ts":7}"#);
     }
 
     #[test]
@@ -124,11 +127,10 @@ mod tests {
     #[test]
     fn engine_path_probe_never_spawns() {
         let t = tempfile::tempdir().unwrap();
-        let exe = if cfg!(windows) {
-            "cargo-targone.exe"
-        } else {
-            "cargo-targone"
-        };
+        #[cfg(windows)]
+        let exe = "cargo-targone.exe";
+        #[cfg(not(windows))]
+        let exe = "cargo-targone";
         assert!(!engine_on_path(Some(std::ffi::OsStr::new(
             t.path().to_str().unwrap()
         ))));

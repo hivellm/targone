@@ -21,6 +21,24 @@ pub struct ProfileGuard {
     _compat: Option<File>,
 }
 
+/// `Ok(true)` = acquired, `Ok(false)` = someone holds it (skip), `Err` = the
+/// filesystem refused the lock operation itself.
+fn map_lock_result(r: Result<(), TryLockError>) -> io::Result<bool> {
+    match r {
+        Ok(()) => Ok(true),
+        Err(TryLockError::WouldBlock) => Ok(false),
+        Err(TryLockError::Error(e)) => Err(e),
+    }
+}
+
+fn try_exclusive(f: &File) -> io::Result<bool> {
+    map_lock_result(f.try_lock())
+}
+
+fn try_shared(f: &File) -> io::Result<bool> {
+    map_lock_result(f.try_lock_shared())
+}
+
 /// Try to take the sweep locks on one profile directory.
 /// `Ok(None)` means a build (or another sweeper) holds them — skip this
 /// profile this run.
@@ -31,21 +49,18 @@ pub fn try_lock_profile(profile: &Path) -> io::Result<Option<ProfileGuard>> {
         .create(true)
         .truncate(false)
         .open(profile.join(".cargo-build-lock"))?;
-    match build.try_lock() {
-        Ok(()) => {}
-        Err(TryLockError::WouldBlock) => return Ok(None),
-        Err(TryLockError::Error(e)) => return Err(e),
+    if !try_exclusive(&build)? {
+        return Ok(None);
     }
     // Only interlock with a `.cargo-lock` that already exists: creating one
     // in a dir Cargo never made would be a write outside our mandate.
     let compat_path = profile.join(".cargo-lock");
     let compat = if compat_path.is_file() {
         let f = File::options().read(true).write(true).open(&compat_path)?;
-        match f.try_lock_shared() {
-            Ok(()) => Some(f),
-            Err(TryLockError::WouldBlock) => return Ok(None),
-            Err(TryLockError::Error(e)) => return Err(e),
+        if !try_shared(&f)? {
+            return Ok(None);
         }
+        Some(f)
     } else {
         None
     };
@@ -92,6 +107,37 @@ mod tests {
     }
 
     #[test]
+    fn compat_lock_taken_shared_when_free() {
+        let t = tempfile::tempdir().unwrap();
+        std::fs::write(t.path().join(".cargo-lock"), b"").unwrap();
+        let guard = try_lock_profile(t.path()).unwrap();
+        assert!(guard.is_some());
+        // While held: a pre-1.96-style exclusive acquisition must fail…
+        let old_cargo = File::options()
+            .read(true)
+            .write(true)
+            .open(t.path().join(".cargo-lock"))
+            .unwrap();
+        assert!(matches!(try_exclusive(&old_cargo), Ok(false)));
+        // …and another shared holder coexists.
+        assert!(matches!(try_shared(&old_cargo), Ok(true)));
+    }
+
+    #[test]
+    fn os_lock_errors_are_surfaced_not_swallowed() {
+        // A genuine I/O error must pass through — never be misread as
+        // contention ("skip") or success.
+        assert!(matches!(map_lock_result(Ok(())), Ok(true)));
+        assert!(matches!(
+            map_lock_result(Err(TryLockError::WouldBlock)),
+            Ok(false)
+        ));
+        assert!(
+            map_lock_result(Err(TryLockError::Error(io::Error::other("device says no")))).is_err()
+        );
+    }
+
+    #[test]
     fn shared_compat_lock_blocks_when_held_exclusively() {
         let t = tempfile::tempdir().unwrap();
         let compat = t.path().join(".cargo-lock");
@@ -106,6 +152,12 @@ mod tests {
         let guard = try_lock_profile(t.path()).unwrap();
         assert!(guard.is_none());
         drop(old_cargo);
+    }
+
+    #[test]
+    fn missing_session_lock_is_free() {
+        let t = tempfile::tempdir().unwrap();
+        assert!(session_lock_free(&t.path().join("never-existed.lock")));
     }
 
     #[test]

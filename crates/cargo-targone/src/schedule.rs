@@ -7,7 +7,11 @@
 use std::path::PathBuf;
 use std::process::Command;
 
-pub const TASK_NAME: &str = "Targone";
+/// Scheduler identity. `TARGONE_TASK_NAME` overrides for tests so coverage
+/// runs never touch the real `Targone` task.
+pub fn task_name() -> String {
+    std::env::var("TARGONE_TASK_NAME").unwrap_or_else(|_| "Targone".to_string())
+}
 
 fn current_exe() -> Result<PathBuf, String> {
     std::env::current_exe().map_err(|e| format!("cannot resolve own executable: {e}"))
@@ -15,7 +19,9 @@ fn current_exe() -> Result<PathBuf, String> {
 
 #[cfg(windows)]
 fn powershell(script: &str) -> Result<String, String> {
-    let out = Command::new("powershell")
+    // `TARGONE_PS_BIN` overrides the interpreter for tests (error paths).
+    let ps = std::env::var("TARGONE_PS_BIN").unwrap_or_else(|_| "powershell".to_string());
+    let out = Command::new(ps)
         .args(["-NoProfile", "-NonInteractive", "-Command", script])
         .output()
         .map_err(|e| format!("cannot run powershell: {e}"))?;
@@ -41,29 +47,32 @@ pub fn install() -> Result<String, String> {
          Register-ScheduledTask -TaskName '{name}' -Action $a -Trigger $t -Settings $s -Force | Out-Null; \
          (Get-ScheduledTask -TaskName '{name}').State",
         exe = exe.display(),
-        name = TASK_NAME
+        name = task_name()
     );
     let state = powershell(&script)?;
     Ok(format!(
-        "registered per-user task '{TASK_NAME}' (daily 03:00, only-if-idle, catch-up on missed runs): {}",
+        "registered per-user task '{}' (daily 03:00, only-if-idle, catch-up on missed runs): {}",
+        task_name(),
         state.trim()
     ))
 }
 
 #[cfg(windows)]
 pub fn uninstall() -> Result<String, String> {
+    let name = task_name();
     let script = format!(
-        "Unregister-ScheduledTask -TaskName '{TASK_NAME}' -Confirm:$false -ErrorAction SilentlyContinue; \
-         if (Get-ScheduledTask -TaskName '{TASK_NAME}' -ErrorAction SilentlyContinue) {{ 'still present' }} else {{ 'removed' }}"
+        "Unregister-ScheduledTask -TaskName '{name}' -Confirm:$false -ErrorAction SilentlyContinue; \
+         if (Get-ScheduledTask -TaskName '{name}' -ErrorAction SilentlyContinue) {{ 'still present' }} else {{ 'removed' }}"
     );
     let out = powershell(&script)?;
-    Ok(format!("task '{TASK_NAME}': {}", out.trim()))
+    Ok(format!("task '{name}': {}", out.trim()))
 }
 
 #[cfg(windows)]
 pub fn status() -> Result<String, String> {
+    let name = task_name();
     let script = format!(
-        "$t = Get-ScheduledTask -TaskName '{TASK_NAME}' -ErrorAction SilentlyContinue; \
+        "$t = Get-ScheduledTask -TaskName '{name}' -ErrorAction SilentlyContinue; \
          if ($t) {{ $i = $t | Get-ScheduledTaskInfo; \
            \"state={{0}} last-run={{1}} last-result={{2}} next-run={{3}}\" -f $t.State, $i.LastRunTime, $i.LastTaskResult, $i.NextRunTime }} \
          else {{ 'not installed' }}"

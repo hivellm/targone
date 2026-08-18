@@ -222,6 +222,35 @@ mod tests {
             Some(UnitKind::Bin)
         );
         assert_eq!(unit_kind_from_files(["invoked.timestamp"]), None);
+        // Remaining kinds and the Other fallback.
+        assert_eq!(unit_kind_from_files(["test-lib-x"]), Some(UnitKind::Test));
+        assert_eq!(
+            unit_kind_from_files(["integration-test-x"]),
+            Some(UnitKind::Test)
+        );
+        assert_eq!(
+            unit_kind_from_files(["example-demo"]),
+            Some(UnitKind::Example)
+        );
+        assert_eq!(unit_kind_from_files(["bench-b"]), Some(UnitKind::Bench));
+        assert_eq!(
+            unit_kind_from_files(["weird-state-file"]),
+            Some(UnitKind::Other("weird-state-file".to_string()))
+        );
+        // Merge order: a specific kind wins over Other in either order, and
+        // the first specific kind is kept.
+        assert_eq!(
+            unit_kind_from_files(["weird-thing", "lib-x"]),
+            Some(UnitKind::Lib)
+        );
+        assert_eq!(
+            unit_kind_from_files(["lib-x", "weird-thing"]),
+            Some(UnitKind::Lib)
+        );
+        assert_eq!(
+            unit_kind_from_files(["lib-x", "bin-y"]),
+            Some(UnitKind::Lib)
+        );
     }
 
     #[test]

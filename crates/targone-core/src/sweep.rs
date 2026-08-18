@@ -142,24 +142,30 @@ fn retryable(e: &io::Error) -> bool {
     e.kind() == io::ErrorKind::PermissionDenied || matches!(e.raw_os_error(), Some(5) | Some(32))
 }
 
+/// A path that is already gone is a success, not an error.
+fn ignore_missing(r: io::Result<()>) -> io::Result<()> {
+    match r {
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
+        other => other,
+    }
+}
+
 fn with_retry(mut op: impl FnMut() -> io::Result<()>) -> io::Result<()> {
     // 50 → 150 → 450 → 1350 ms between attempts: ~2 s total, enough for
     // most Defender scan-on-delete holds without stalling a large sweep.
     let mut delay = Duration::from_millis(50);
-    let mut last = None;
-    for attempt in 0..5 {
-        match op() {
+    for _ in 0..4 {
+        match ignore_missing(op()) {
             Ok(()) => return Ok(()),
-            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(()),
-            Err(e) if attempt < 4 && retryable(&e) => {
+            Err(e) if retryable(&e) => {
                 std::thread::sleep(delay);
                 delay *= 3;
-                last = Some(e);
             }
             Err(e) => return Err(e),
         }
     }
-    Err(last.unwrap_or_else(|| io::Error::other("retry exhausted")))
+    // Final attempt: whatever error remains is the caller's residue.
+    ignore_missing(op())
 }
 
 fn delete_dir_tolerant(dir: &Path) -> io::Result<()> {
@@ -287,6 +293,91 @@ mod tests {
         assert!(inc.join("mycrate-aaaa").is_dir());
         let log = String::from_utf8(audit).unwrap();
         assert!(log.contains("skipped-session-lock"));
+    }
+
+    #[test]
+    fn sweep_refuses_network_paths() {
+        let report = crate::scan::ProfileReport {
+            path: std::path::PathBuf::from(r"\\definitely-not-a-real-host\share\debug"),
+            layout: ProfileLayout::LegacyBuild,
+            pools: Default::default(),
+            tiers: Vec::new(),
+            reclaim: Vec::new(),
+            unparsed_kept: 0,
+        };
+        let mut audit = Vec::new();
+        let outcome = sweep_profile(&report, "test-run", &mut audit).unwrap();
+        assert_eq!(outcome.refused.as_deref(), Some("network filesystem"));
+    }
+
+    #[test]
+    fn missing_paths_are_tolerated_not_errors() {
+        let t = tempfile::tempdir().unwrap();
+        assert!(delete_dir_tolerant(&t.path().join("never-was")).is_ok());
+        assert!(delete_file_tolerant(&t.path().join("never-was.rlib")).is_ok());
+    }
+
+    #[test]
+    fn invalid_paths_error_without_retry() {
+        // A filename Windows/Unix cannot even address: non-retryable Err arm.
+        let bad = Path::new("con\u{0}bad/\u{0}x");
+        assert!(delete_file_tolerant(bad).is_err());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn held_handle_without_share_delete_becomes_residue() {
+        use std::os::windows::fs::OpenOptionsExt;
+        let t = tempfile::tempdir().unwrap();
+        let profile = t.path().join("debug");
+        lib_unit(&profile, "serde", "aaaaaaaaaaaaaaaa", 1000);
+        sleep(StdDuration::from_millis(60));
+        lib_unit(&profile, "serde", "bbbbbbbbbbbbbbbb", 2000);
+        let report = scan_profile(&profile, ProfileLayout::LegacyBuild);
+        // Hold the superseded rlib AND a file inside the superseded
+        // fingerprint dir with share_mode(0): both the delete_then file path
+        // and the delete_first dir path (std then crate fallback) fail
+        // through every retry — the residue path, tolerated, never fatal.
+        let _hold_file = fs::OpenOptions::new()
+            .read(true)
+            .share_mode(0)
+            .open(profile.join("deps/libserde-aaaaaaaaaaaaaaaa.rlib"))
+            .unwrap();
+        let _hold_in_dir = fs::OpenOptions::new()
+            .read(true)
+            .share_mode(0)
+            .open(profile.join(".fingerprint/serde-aaaaaaaaaaaaaaaa/lib-serde"))
+            .unwrap();
+        let mut audit = Vec::new();
+        let outcome = sweep_profile(&report, "test-run", &mut audit).unwrap();
+        assert!(outcome.residue_paths >= 2);
+        let log = String::from_utf8(audit).unwrap();
+        assert!(log.contains("swept-with-residue"), "{log}");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn junction_dirs_are_refused() {
+        let t = tempfile::tempdir().unwrap();
+        let real = t.path().join("real");
+        fs::create_dir_all(&real).unwrap();
+        let link = t.path().join("link");
+        let ok = std::process::Command::new("cmd")
+            .args([
+                "/c",
+                "mklink",
+                "/J",
+                link.to_str().unwrap(),
+                real.to_str().unwrap(),
+            ])
+            .output()
+            .unwrap()
+            .status
+            .success();
+        assert!(ok, "junction creation failed");
+        let err = delete_dir_tolerant(&link).unwrap_err();
+        assert!(err.to_string().contains("symlink"), "{err}");
+        assert!(real.exists());
     }
 
     #[test]

@@ -205,15 +205,15 @@ fn collect_pools(path: &Path, report: &mut ProfileReport) {
     }
     // Uplifted artifacts and lock files live directly in the profile dir.
     let mut uplifted = PoolStats::default();
-    if let Ok(entries) = fs::read_dir(path) {
-        for e in entries.flatten() {
-            if let Ok(meta) = e.metadata() {
-                if meta.is_file() {
-                    uplifted.bytes += meta.len();
-                    uplifted.files += 1;
-                }
-            }
-        }
+    for meta in fs::read_dir(path)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|e| e.metadata().ok())
+        .filter(|m| m.is_file())
+    {
+        uplifted.bytes += meta.len();
+        uplifted.files += 1;
     }
     report.pools.insert("uplifted".to_string(), uplifted);
 }
@@ -226,10 +226,14 @@ fn classify_incremental(path: &Path, report: &mut ProfileReport) {
         return;
     }
     let mut groups: BTreeMap<String, Vec<(SystemTime, u64, PathBuf)>> = BTreeMap::new();
-    if let Ok(entries) = fs::read_dir(&inc) {
-        for e in entries.flatten() {
+    {
+        let entries = fs::read_dir(&inc)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .filter_map(|e| e.metadata().ok().map(|m| (e, m)));
+        for (e, meta) in entries {
             let name = e.file_name().to_string_lossy().into_owned();
-            let Ok(meta) = e.metadata() else { continue };
             if !meta.is_dir() {
                 report.unparsed_kept += 1;
                 continue;
@@ -258,15 +262,13 @@ fn classify_incremental(path: &Path, report: &mut ProfileReport) {
         for (_, size, dir) in entries.iter().take(entries.len().saturating_sub(1)) {
             // rustc coordinates sessions via `s-*.lock` files inside the dir;
             // the sweep must hold them exclusively before deleting (spike 0.4).
-            let mut session_locks = Vec::new();
-            if let Ok(inner) = fs::read_dir(dir) {
-                for f in inner.flatten() {
-                    let n = f.file_name().to_string_lossy().into_owned();
-                    if n.ends_with(".lock") {
-                        session_locks.push(f.path());
-                    }
-                }
-            }
+            let session_locks: Vec<PathBuf> = fs::read_dir(dir)
+                .into_iter()
+                .flatten()
+                .flatten()
+                .filter(|f| f.file_name().to_string_lossy().ends_with(".lock"))
+                .map(|f| f.path())
+                .collect();
             report.reclaim.push(ReclaimItem {
                 tier: Tier::Incremental,
                 delete_first: vec![dir.clone()],
@@ -383,16 +385,13 @@ fn classify_legacy_units(path: &Path, report: &mut ProfileReport) {
         let mut files = Vec::new();
         let mut recency = SystemTime::UNIX_EPOCH;
         let mut fp_bytes = 0u64;
-        if let Ok(inner) = fs::read_dir(e.path()) {
-            for f in inner.flatten() {
-                files.push(f.file_name().to_string_lossy().into_owned());
-                if let Ok(meta) = f.metadata() {
-                    fp_bytes += meta.len();
-                    if let Ok(m) = meta.modified() {
-                        recency = recency.max(m);
-                    }
-                }
-            }
+        for f in fs::read_dir(e.path()).into_iter().flatten().flatten() {
+            files.push(f.file_name().to_string_lossy().into_owned());
+            let meta = f.metadata().ok();
+            fp_bytes += meta.as_ref().map_or(0, |m| m.len());
+            recency = meta
+                .and_then(|m| m.modified().ok())
+                .map_or(recency, |m| recency.max(m));
         }
         let Some(kind) = unit_kind_from_files(files.iter().map(String::as_str)) else {
             report.unparsed_kept += 1;
@@ -511,10 +510,7 @@ fn classify_v2_units(path: &Path, report: &mut ProfileReport) {
             continue;
         }
         let pkg_name = pkg.file_name().to_string_lossy().into_owned();
-        let Ok(metas) = fs::read_dir(pkg.path()) else {
-            continue;
-        };
-        for meta_dir in metas.flatten() {
+        for meta_dir in fs::read_dir(pkg.path()).into_iter().flatten().flatten() {
             let hash_name = meta_dir.file_name().to_string_lossy().into_owned();
             let fp = meta_dir.path().join("fingerprint");
             if !crate::unit::is_unit_hash(&hash_name) {
@@ -537,13 +533,12 @@ fn classify_v2_units(path: &Path, report: &mut ProfileReport) {
             }
             let mut files = Vec::new();
             let mut recency = SystemTime::UNIX_EPOCH;
-            if let Ok(inner) = fs::read_dir(&fp) {
-                for f in inner.flatten() {
-                    files.push(f.file_name().to_string_lossy().into_owned());
-                    if let Ok(m) = f.metadata().and_then(|m| m.modified()) {
-                        recency = recency.max(m);
-                    }
-                }
+            for f in fs::read_dir(&fp).into_iter().flatten().flatten() {
+                files.push(f.file_name().to_string_lossy().into_owned());
+                recency = f
+                    .metadata()
+                    .and_then(|m| m.modified())
+                    .map_or(recency, |m| recency.max(m));
             }
             let Some(kind) = unit_kind_from_files(files.iter().map(String::as_str)) else {
                 report.unparsed_kept += 1;
@@ -552,11 +547,13 @@ fn classify_v2_units(path: &Path, report: &mut ProfileReport) {
             let state = unit_state_files(files.iter().map(String::as_str));
             // Mode discriminator: the extension set of the unit's outputs.
             let mut exts: BTreeSet<String> = BTreeSet::new();
-            if let Ok(out) = fs::read_dir(meta_dir.path().join("out")) {
-                for f in out.flatten() {
-                    let name = f.file_name().to_string_lossy().into_owned();
-                    exts.insert(extension_chain(&name).to_string());
-                }
+            for f in fs::read_dir(meta_dir.path().join("out"))
+                .into_iter()
+                .flatten()
+                .flatten()
+            {
+                let name = f.file_name().to_string_lossy().into_owned();
+                exts.insert(extension_chain(&name).to_string());
             }
             if meta_dir.path().join("run").is_dir() {
                 exts.insert("run/".to_string());
@@ -612,13 +609,11 @@ pub fn newest_compile(profile: &Path) -> Option<SystemTime> {
             .into_iter()
             .flatten()
         {
-            if entry.file_type().is_file() {
-                if let Ok(meta) = entry.metadata() {
-                    if let Ok(m) = meta.modified() {
-                        newest = Some(newest.map_or(m, |n| n.max(m)));
-                    }
-                }
-            }
+            let m = Some(&entry)
+                .filter(|e| e.file_type().is_file())
+                .and_then(|e| e.metadata().ok())
+                .and_then(|md| md.modified().ok());
+            newest = m.map_or(newest, |m| Some(newest.map_or(m, |n| n.max(m))));
         }
     }
     newest
@@ -730,20 +725,17 @@ pub fn append_dormant_item(report: &mut ProfileReport, cutoff: SystemTime) -> bo
         }
     }
     let mut delete_then = Vec::new();
-    if let Ok(children) = fs::read_dir(&report.path) {
-        for e in children.flatten() {
-            let name = e.file_name().to_string_lossy().into_owned();
-            if KEEP_IN_PROFILE.contains(&name.as_str()) {
-                continue;
-            }
-            if let Ok(meta) = e.metadata() {
-                if meta.is_file() {
-                    bytes += meta.len();
-                    entries += 1;
-                    delete_then.push(e.path());
-                }
-            }
-        }
+    let uplifted = fs::read_dir(&report.path)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter(|e| !KEEP_IN_PROFILE.contains(&e.file_name().to_string_lossy().as_ref()))
+        .filter_map(|e| e.metadata().ok().map(|m| (e, m)))
+        .filter(|(_, m)| m.is_file());
+    for (e, meta) in uplifted {
+        bytes += meta.len();
+        entries += 1;
+        delete_then.push(e.path());
     }
     // The wipe supersedes every finer-grained item (their paths live inside
     // the pools being deleted) — replace, don't stack, so estimates stay
@@ -1024,12 +1016,10 @@ mod tests {
         let profile = t.path().join("debug");
         lib_unit(&profile, "serde", "aaaaaaaaaaaaaaaa", 4096);
         let rlib = profile.join("deps/libserde-aaaaaaaaaaaaaaaa.rlib");
-        let before = fs::metadata(&rlib).and_then(|m| m.accessed());
+        let before = fs::metadata(&rlib).and_then(|m| m.accessed()).ok();
         let _ = scan_profile(&profile, ProfileLayout::LegacyBuild);
-        let after = fs::metadata(&rlib).and_then(|m| m.accessed());
-        if let (Ok(b), Ok(a)) = (before, after) {
-            assert_eq!(b, a, "scan must not update artifact atime");
-        }
+        let after = fs::metadata(&rlib).and_then(|m| m.accessed()).ok();
+        assert_eq!(before, after, "scan must not update artifact atime");
     }
 
     #[test]
@@ -1130,5 +1120,154 @@ mod tests {
         write(&check_mode.join("out/libserde-bbbbbbbbbbbbbbbb.rmeta"), 200);
         let report = scan_profile(&profile, ProfileLayout::V2);
         assert_eq!(report.reclaimable_bytes(), 0);
+    }
+
+    #[test]
+    fn target_root_pools_and_passive_layouts() {
+        let t = tempfile::tempdir().unwrap();
+        let root = t.path().join("target");
+        write(&root.join("doc/index.html"), 100);
+        write(&root.join("package/x.crate"), 50);
+        fs::create_dir_all(root.join("debug/.fingerprint")).unwrap();
+        fs::create_dir_all(root.join("debug/deps")).unwrap();
+        let td = crate::discover::TargetDir {
+            root: root.clone(),
+            profiles: vec![(root.join("debug"), ProfileLayout::LegacyBuild)],
+        };
+        let report = scan_target_dir(&td);
+        assert_eq!(report.root_pools["doc"].bytes, 100);
+        assert_eq!(report.root_pools["package"].bytes, 50);
+        // Passive layouts carry pools but no plan.
+        let a = scan_profile(&root.join("debug"), ProfileLayout::ArtifactOnly);
+        assert!(a.tiers.is_empty() && a.reclaim.is_empty());
+        let u = scan_profile(&root.join("debug"), ProfileLayout::Unknown);
+        assert_eq!(u.reclaimable_bytes(), 0);
+    }
+
+    #[test]
+    fn grammar_violations_are_kept_and_counted() {
+        let t = tempfile::tempdir().unwrap();
+        let profile = t.path().join("debug");
+        // Files where dirs belong, hashless names, kindless fingerprints.
+        write(&profile.join("incremental/stray-file.txt"), 10);
+        write(&profile.join(".fingerprint/stray-file"), 10);
+        fs::create_dir_all(profile.join(".fingerprint/no-hash-here")).unwrap();
+        let kindless = profile.join(".fingerprint/pkg-aaaaaaaaaaaaaaaa");
+        write(&kindless.join("invoked.timestamp"), 8);
+        write(&profile.join("deps/x.txt"), 10); // hashless deps file: kept
+        fs::create_dir_all(profile.join("deps/subdir")).unwrap();
+        write(&profile.join("build/stray-file"), 10);
+        fs::create_dir_all(profile.join("build/no-hash-dir")).unwrap();
+        let report = scan_profile(&profile, ProfileLayout::LegacyBuild);
+        assert_eq!(report.reclaimable_bytes(), 0);
+        assert!(report.unparsed_kept >= 5, "{}", report.unparsed_kept);
+    }
+
+    #[test]
+    fn missing_fingerprint_root_is_a_no_op() {
+        let t = tempfile::tempdir().unwrap();
+        let profile = t.path().join("debug");
+        fs::create_dir_all(&profile).unwrap();
+        let report = scan_profile(&profile, ProfileLayout::LegacyBuild);
+        assert!(report.reclaim.is_empty());
+    }
+
+    #[test]
+    fn superseded_build_script_pair_lands_in_build_scripts_tier() {
+        let t = tempfile::tempdir().unwrap();
+        let profile = t.path().join("debug");
+        fs::create_dir_all(profile.join("deps")).unwrap();
+        for hash in ["aaaaaaaaaaaaaaaa", "bbbbbbbbbbbbbbbb"] {
+            let fp = profile.join(".fingerprint").join(format!("serde-{hash}"));
+            write(&fp.join("run-build-script-build-script-build"), 16);
+            write(&fp.join("run-build-script-build-script-build.json"), 32);
+            write(
+                &profile.join(format!("build/serde-{hash}/out/data.rs")),
+                200,
+            );
+            sleep(Duration::from_millis(60));
+        }
+        let report = scan_profile(&profile, ProfileLayout::LegacyBuild);
+        let bs = report
+            .tiers
+            .iter()
+            .find(|t| t.tier == Tier::BuildScripts)
+            .unwrap();
+        // Fingerprint dir (16 + 32 json) + the build/ dir (200).
+        assert_eq!(bs.reclaimable_bytes, 48 + 200);
+        assert!(report.reclaim[0].delete_then[0].ends_with("serde-aaaaaaaaaaaaaaaa"));
+    }
+
+    #[test]
+    fn v2_grammar_violations_and_run_marker() {
+        let t = tempfile::tempdir().unwrap();
+        let profile = t.path().join("debug");
+        // No build/ at all.
+        fs::create_dir_all(&profile).unwrap();
+        let r = scan_profile(&profile, ProfileLayout::V2);
+        assert!(r.reclaim.is_empty());
+        // Violations: file at pkg level, non-hash META, kindless fingerprint.
+        write(&profile.join("build/stray-file"), 10);
+        fs::create_dir_all(profile.join("build/serde/not-a-hash")).unwrap();
+        let kindless = profile.join("build/serde/aaaaaaaaaaaaaaaa/fingerprint");
+        write(&kindless.join("only.json"), 10);
+        // Two build-script generations distinguished by the run/ marker set.
+        for hash in ["cccccccccccccccc", "dddddddddddddddd"] {
+            let unit = profile.join(format!("build/zmij/{hash}"));
+            write(
+                &unit.join("fingerprint/run-build-script-build-script-build"),
+                16,
+            );
+            fs::create_dir_all(unit.join("run")).unwrap();
+            write(&unit.join("out/output"), 100);
+            sleep(Duration::from_millis(60));
+        }
+        let report = scan_profile(&profile, ProfileLayout::V2);
+        assert!(report.unparsed_kept >= 3);
+        let bs = report
+            .tiers
+            .iter()
+            .find(|t| t.tier == Tier::BuildScripts)
+            .unwrap();
+        assert_eq!(bs.reclaimable_entries, 1);
+    }
+
+    #[test]
+    fn opt_in_tiers_are_no_ops_on_passive_layouts_and_empty_pools() {
+        let t = tempfile::tempdir().unwrap();
+        let profile = t.path().join("debug");
+        fs::create_dir_all(profile.join(".fingerprint")).unwrap();
+        fs::create_dir_all(profile.join("deps")).unwrap();
+        // Passive layout: both opt-ins refuse.
+        let mut passive = scan_profile(&profile, ProfileLayout::ArtifactOnly);
+        append_pdb_items(&mut passive);
+        assert!(!append_dormant_item(
+            &mut passive,
+            SystemTime::now() + Duration::from_secs(3600)
+        ));
+        assert!(passive.reclaim.is_empty());
+        // No pdbs anywhere: no Pdb tier row appears.
+        let mut empty = scan_profile(&profile, ProfileLayout::LegacyBuild);
+        append_pdb_items(&mut empty);
+        assert!(empty.tiers.iter().all(|t| t.tier != Tier::Pdb));
+    }
+
+    #[test]
+    fn dormant_wipe_without_uplifted_files() {
+        let t = tempfile::tempdir().unwrap();
+        let profile = t.path().join("debug");
+        lib_unit(&profile, "serde", "aaaaaaaaaaaaaaaa", 1000);
+        let mut report = scan_profile(&profile, ProfileLayout::LegacyBuild);
+        assert!(append_dormant_item(
+            &mut report,
+            SystemTime::now() + Duration::from_secs(3600)
+        ));
+        assert!(report.reclaim[0].delete_then.is_empty());
+    }
+
+    #[test]
+    fn newest_compile_none_without_evidence() {
+        let t = tempfile::tempdir().unwrap();
+        assert!(newest_compile(t.path()).is_none());
     }
 }

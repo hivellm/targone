@@ -137,6 +137,22 @@ mod tests {
     }
 
     #[test]
+    fn parentless_registry_path_still_errors_cleanly() {
+        // A rootless path has no parent to create; the append itself fails.
+        let reg = Registry::open(PathBuf::from("/"));
+        assert!(reg.record(Path::new("/proj")).is_err());
+    }
+
+    #[test]
+    fn unreadable_registry_is_an_error() {
+        // The registry path exists but is a directory: a real I/O error must
+        // surface, not masquerade as an empty registry.
+        let t = tempfile::tempdir().unwrap();
+        let reg = Registry::open(t.path().to_path_buf());
+        assert!(reg.entries().is_err());
+    }
+
+    #[test]
     fn missing_file_is_empty() {
         let t = tempfile::tempdir().unwrap();
         let reg = Registry::open(t.path().join("nope.jsonl"));

@@ -76,24 +76,24 @@ fn collect_profiles(root: &Path) -> Vec<(PathBuf, ProfileLayout)> {
     };
     for child in children.flatten() {
         let path = child.path();
-        let Ok(meta) = fs::symlink_metadata(&path) else {
-            continue;
-        };
-        if !meta.is_dir() {
+        // DirEntry::file_type never follows symlinks — same guarantee as a
+        // symlink_metadata probe, without a second syscall.
+        if !child.file_type().map(|t| t.is_dir()).unwrap_or(false) {
             continue;
         }
         match probe_profile(&path) {
             ProfileLayout::Unknown => {
                 // One nesting level: `target/<triple>/<profile>` (cross builds).
-                if let Ok(grandchildren) = fs::read_dir(&path) {
-                    for gc in grandchildren.flatten() {
-                        let gp = gc.path();
-                        if gp.is_dir() {
-                            let layout = probe_profile(&gp);
-                            if layout != ProfileLayout::Unknown {
-                                profiles.push((gp, layout));
-                            }
-                        }
+                let grandchildren = fs::read_dir(&path)
+                    .into_iter()
+                    .flatten()
+                    .flatten()
+                    .map(|gc| gc.path())
+                    .filter(|gp| gp.is_dir());
+                for gp in grandchildren {
+                    let layout = probe_profile(&gp);
+                    if layout != ProfileLayout::Unknown {
+                        profiles.push((gp, layout));
                     }
                 }
             }
@@ -157,9 +157,30 @@ mod tests {
         let target = t.path().join("proj/target");
         legacy_profile(&target.join("debug"));
         legacy_profile(&target.join("x86_64-unknown-linux-gnu/release"));
+        // Non-profile junk inside the triple dir is simply not a profile.
+        fs::create_dir_all(target.join("x86_64-unknown-linux-gnu/junk")).unwrap();
         let found = discover(&[t.path().to_path_buf()]);
         assert_eq!(found.len(), 1);
         assert_eq!(found[0].profiles.len(), 2);
+    }
+
+    #[test]
+    fn pruned_dirs_are_never_entered() {
+        let t = tempfile::tempdir().unwrap();
+        // A marker-bearing target dir hidden inside node_modules must stay
+        // invisible: the prune fires before the probe.
+        let hidden = t.path().join("node_modules/evil/target");
+        legacy_profile(&hidden.join("debug"));
+        let found = discover(&[t.path().to_path_buf()]);
+        assert!(found.is_empty());
+    }
+
+    #[test]
+    fn a_file_named_target_is_not_a_target_dir() {
+        let t = tempfile::tempdir().unwrap();
+        let f = t.path().join("target");
+        fs::write(&f, b"just a file").unwrap();
+        assert!(try_target_dir(&f).is_none());
     }
 
     #[test]
