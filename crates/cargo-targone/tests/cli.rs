@@ -358,12 +358,12 @@ fn gc_apply_notes_for_locked_profile_and_session_locks() {
     // A NEW session dir: a direct child, so mycrate-bb's own mtime advances
     // (grandchild writes would not touch it).
     write(&profile.join("incremental/mycrate-bb/s-x2-w-z/o.bin"), 10);
-    let sholder = File::options()
+    let session_holder = File::options()
         .read(true)
         .write(true)
         .open(&session)
         .unwrap();
-    sholder.try_lock().unwrap();
+    session_holder.try_lock().unwrap();
     let o = run_in(&home, &["gc", "--apply", &root]);
     assert!(
         stdout(&o).contains("items skipped (session locks)"),

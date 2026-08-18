@@ -8,7 +8,9 @@ use std::path::PathBuf;
 use std::process::Command;
 
 /// Scheduler identity. `TARGONE_TASK_NAME` overrides for tests so coverage
-/// runs never touch the real `Targone` task.
+/// runs never touch the real `Targone` task. (Windows-only: systemd/launchd
+/// identities are fixed unit/plist names.)
+#[cfg(windows)]
 pub fn task_name() -> String {
     std::env::var("TARGONE_TASK_NAME").unwrap_or_else(|_| "Targone".to_string())
 }
