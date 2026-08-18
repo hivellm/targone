@@ -11,6 +11,14 @@ authors.workspace = true
 [dependencies]
 walkdir.workspace = true
 serde.workspace = true
+serde_json.workspace = true
+remove_dir_all.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.60", features = ["Win32_Storage_FileSystem"] }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
 
 [dev-dependencies]
 tempfile.workspace = true

@@ -6,10 +6,14 @@
 //! superseded is kept.
 
 pub mod discover;
+pub mod fsinfo;
 pub mod layout;
+pub mod lock;
 pub mod scan;
+pub mod sweep;
 pub mod unit;
 
 pub use discover::{discover, TargetDir};
 pub use layout::ProfileLayout;
 pub use scan::{scan_target_dir, PoolStats, ProfileReport, TargetReport, Tier, TierEstimate};
+pub use sweep::{sweep_profile, SweepOutcome};

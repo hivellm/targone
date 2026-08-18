@@ -12,6 +12,12 @@
 //!   the newest: on MSVC these are the LIVE fingerprints of plain binaries,
 //!   whose artifacts are hash-less (spike 0.3).
 //!
+//! Classification produces concrete [`ReclaimItem`]s: what to delete, in
+//! which order (fingerprint dir before its artifacts — a missing output is a
+//! safe rebuild, a stale fingerprint over missing outputs is the hazard), and
+//! which rustc session locks must be held. The sweep layer executes them;
+//! this module never deletes anything.
+//!
 //! Scanning never opens artifact file contents (F-056) — sizes, names and
 //! mtimes only.
 
@@ -52,6 +58,20 @@ pub enum Tier {
     OrphanFingerprints,
 }
 
+/// One concrete deletion unit. `delete_first` paths (directories) go before
+/// `delete_then` paths (files/dirs) — the fingerprint-before-artifacts order.
+/// If any `session_locks` file cannot be exclusively locked, the whole item
+/// is skipped (rustc may be using the incremental session).
+#[derive(Debug, Clone, Serialize)]
+pub struct ReclaimItem {
+    pub tier: Tier,
+    pub delete_first: Vec<PathBuf>,
+    pub delete_then: Vec<PathBuf>,
+    pub session_locks: Vec<PathBuf>,
+    pub bytes: u64,
+    pub entries: u64,
+}
+
 #[derive(Debug, Clone, Copy, Serialize)]
 pub struct TierEstimate {
     pub tier: Tier,
@@ -65,6 +85,8 @@ pub struct ProfileReport {
     pub layout: ProfileLayout,
     pub pools: BTreeMap<String, PoolStats>,
     pub tiers: Vec<TierEstimate>,
+    /// The concrete deletion plan behind the tier estimates.
+    pub reclaim: Vec<ReclaimItem>,
     /// Entries that matched no grammar and were therefore kept (fail-open).
     pub unparsed_kept: u64,
 }
@@ -124,6 +146,7 @@ pub fn scan_profile(path: &Path, layout: ProfileLayout) -> ProfileReport {
         layout,
         pools: BTreeMap::new(),
         tiers: Vec::new(),
+        reclaim: Vec::new(),
         unparsed_kept: 0,
     };
     collect_pools(path, &mut report);
@@ -137,6 +160,29 @@ pub fn scan_profile(path: &Path, layout: ProfileLayout) -> ProfileReport {
             classify_v2_units(path, &mut report);
         }
         ProfileLayout::ArtifactOnly | ProfileLayout::Unknown => {}
+    }
+    // Derive tier estimates from the concrete plan.
+    let tier_set: &[Tier] = match layout {
+        ProfileLayout::LegacyBuild => &[
+            Tier::Incremental,
+            Tier::Units,
+            Tier::BuildScripts,
+            Tier::OrphanFingerprints,
+        ],
+        ProfileLayout::V2 => &[Tier::Incremental, Tier::Units, Tier::BuildScripts],
+        _ => &[],
+    };
+    for &tier in tier_set {
+        let (bytes, entries) = report
+            .reclaim
+            .iter()
+            .filter(|i| i.tier == tier)
+            .fold((0u64, 0u64), |acc, i| (acc.0 + i.bytes, acc.1 + i.entries));
+        report.tiers.push(TierEstimate {
+            tier,
+            reclaimable_bytes: bytes,
+            reclaimable_entries: entries,
+        });
     }
     report
 }
@@ -172,7 +218,7 @@ fn classify_incremental(path: &Path, report: &mut ProfileReport) {
     if !inc.is_dir() {
         return;
     }
-    let mut groups: BTreeMap<String, Vec<(SystemTime, u64)>> = BTreeMap::new();
+    let mut groups: BTreeMap<String, Vec<(SystemTime, u64, PathBuf)>> = BTreeMap::new();
     if let Ok(entries) = fs::read_dir(&inc) {
         for e in entries.flatten() {
             let name = e.file_name().to_string_lossy().into_owned();
@@ -192,27 +238,38 @@ fn classify_incremental(path: &Path, report: &mut ProfileReport) {
                     groups
                         .entry(krate.to_string())
                         .or_default()
-                        .push((mtime, size));
+                        .push((mtime, size, e.path()));
                 }
                 None => report.unparsed_kept += 1,
             }
         }
     }
-    let mut estimate = TierEstimate {
-        tier: Tier::Incremental,
-        reclaimable_bytes: 0,
-        reclaimable_entries: 0,
-    };
     for entries in groups.values_mut() {
-        entries.sort_by_key(|(mtime, _)| *mtime);
+        entries.sort_by_key(|e| e.0);
         // Everything except the newest is dead the moment the new
         // disambiguator appeared (F-003).
-        for (_, size) in entries.iter().take(entries.len().saturating_sub(1)) {
-            estimate.reclaimable_bytes += size;
-            estimate.reclaimable_entries += 1;
+        for (_, size, dir) in entries.iter().take(entries.len().saturating_sub(1)) {
+            // rustc coordinates sessions via `s-*.lock` files inside the dir;
+            // the sweep must hold them exclusively before deleting (spike 0.4).
+            let mut session_locks = Vec::new();
+            if let Ok(inner) = fs::read_dir(dir) {
+                for f in inner.flatten() {
+                    let n = f.file_name().to_string_lossy().into_owned();
+                    if n.ends_with(".lock") {
+                        session_locks.push(f.path());
+                    }
+                }
+            }
+            report.reclaim.push(ReclaimItem {
+                tier: Tier::Incremental,
+                delete_first: vec![dir.clone()],
+                delete_then: Vec::new(),
+                session_locks,
+                bytes: *size,
+                entries: 1,
+            });
         }
     }
-    report.tiers.push(estimate);
 }
 
 /// Which artifacts a fingerprint hash owns — the mode discriminator.
@@ -232,17 +289,20 @@ enum ArtifactClass {
 struct FingerprintUnit {
     kind: UnitKind,
     recency: SystemTime,
-    dir_bytes: u64,
+    fp_dir: PathBuf,
+    fp_bytes: u64,
+    artifact_paths: Vec<PathBuf>,
     artifact_bytes: u64,
     artifact_files: u64,
     class_is_orphan: bool,
 }
 
-fn tally(tiers: &mut [TierEstimate], tier: Tier, bytes: u64, entries: u64) {
-    if let Some(t) = tiers.iter_mut().find(|t| t.tier == tier) {
-        t.reclaimable_bytes += bytes;
-        t.reclaimable_entries += entries;
-    }
+#[derive(Default)]
+struct DepsEntry {
+    bytes: u64,
+    files: u64,
+    exts: BTreeSet<String>,
+    paths: Vec<PathBuf>,
 }
 
 /// Tiers 2–4 on the legacy layout: identity-recency over
@@ -256,8 +316,8 @@ fn classify_legacy_units(path: &Path, report: &mut ProfileReport) {
         return;
     };
 
-    // Artifact index: hash → (bytes, files, extension-chain set).
-    let mut deps_index: BTreeMap<String, (u64, u64, BTreeSet<String>)> = BTreeMap::new();
+    // Artifact index: hash → sizes, extension chains, concrete paths.
+    let mut deps_index: BTreeMap<String, DepsEntry> = BTreeMap::new();
     for pool in ["deps", "examples"] {
         let Ok(files) = fs::read_dir(path.join(pool)) else {
             continue;
@@ -271,15 +331,16 @@ fn classify_legacy_units(path: &Path, report: &mut ProfileReport) {
             // Hash-less files are the known plain-bin class: always kept.
             if let Some(h) = artifact_hash(&name) {
                 let entry = deps_index.entry(h.to_string()).or_default();
-                entry.0 += meta.len();
-                entry.1 += 1;
-                entry.2.insert(extension_chain(&name).to_string());
+                entry.bytes += meta.len();
+                entry.files += 1;
+                entry.exts.insert(extension_chain(&name).to_string());
+                entry.paths.push(e.path());
             }
         }
     }
 
-    // build/ index: hash → recursive dir bytes.
-    let mut build_index: BTreeMap<String, u64> = BTreeMap::new();
+    // build/ index: hash → (recursive dir bytes, path).
+    let mut build_index: BTreeMap<String, (u64, PathBuf)> = BTreeMap::new();
     if let Ok(dirs) = fs::read_dir(path.join("build")) {
         for e in dirs.flatten() {
             let name = e.file_name().to_string_lossy().into_owned();
@@ -288,7 +349,7 @@ fn classify_legacy_units(path: &Path, report: &mut ProfileReport) {
             }
             match split_hash_suffix(&name) {
                 Some((_, h)) => {
-                    build_index.insert(h.to_string(), dir_stats(&e.path()).bytes);
+                    build_index.insert(h.to_string(), (dir_stats(&e.path()).bytes, e.path()));
                 }
                 None => report.unparsed_kept += 1,
             }
@@ -298,6 +359,9 @@ fn classify_legacy_units(path: &Path, report: &mut ProfileReport) {
     // Group fingerprints by (package, state-file set, artifact class).
     type Key = (String, Vec<String>, ArtifactClass);
     let mut groups: BTreeMap<Key, Vec<FingerprintUnit>> = BTreeMap::new();
+    // Every hash that has a fingerprint dir at all (even unclassifiable ones
+    // — those keep their artifacts, fail-open).
+    let mut fingerprint_hashes: BTreeSet<String> = BTreeSet::new();
     for e in entries.flatten() {
         let name = e.file_name().to_string_lossy().into_owned();
         if !e.path().is_dir() {
@@ -308,14 +372,15 @@ fn classify_legacy_units(path: &Path, report: &mut ProfileReport) {
             report.unparsed_kept += 1;
             continue;
         };
+        fingerprint_hashes.insert(hash.to_string());
         let mut files = Vec::new();
         let mut recency = SystemTime::UNIX_EPOCH;
-        let mut dir_bytes = 0u64;
+        let mut fp_bytes = 0u64;
         if let Ok(inner) = fs::read_dir(e.path()) {
             for f in inner.flatten() {
                 files.push(f.file_name().to_string_lossy().into_owned());
                 if let Ok(meta) = f.metadata() {
-                    dir_bytes += meta.len();
+                    fp_bytes += meta.len();
                     if let Ok(m) = meta.modified() {
                         recency = recency.max(m);
                     }
@@ -327,17 +392,19 @@ fn classify_legacy_units(path: &Path, report: &mut ProfileReport) {
             continue;
         };
         let state = unit_state_files(files.iter().map(String::as_str));
-        let (class, artifact_bytes, artifact_files) = if let Some(b) = build_index.get(hash) {
-            (ArtifactClass::BuildDir, *b, 1)
-        } else if let Some((bytes, count, exts)) = deps_index.get(hash) {
-            (
-                ArtifactClass::Deps(exts.iter().cloned().collect()),
-                *bytes,
-                *count,
-            )
-        } else {
-            (ArtifactClass::Orphan, 0, 0)
-        };
+        let (class, artifact_paths, artifact_bytes, artifact_files) =
+            if let Some((b, p)) = build_index.get(hash) {
+                (ArtifactClass::BuildDir, vec![p.clone()], *b, 1)
+            } else if let Some(d) = deps_index.get(hash) {
+                (
+                    ArtifactClass::Deps(d.exts.iter().cloned().collect()),
+                    d.paths.clone(),
+                    d.bytes,
+                    d.files,
+                )
+            } else {
+                (ArtifactClass::Orphan, Vec::new(), 0, 0)
+            };
         let class_is_orphan = class == ArtifactClass::Orphan;
         groups
             .entry((pkg.to_string(), state, class))
@@ -345,30 +412,15 @@ fn classify_legacy_units(path: &Path, report: &mut ProfileReport) {
             .push(FingerprintUnit {
                 kind,
                 recency,
-                dir_bytes,
+                fp_dir: e.path(),
+                fp_bytes,
+                artifact_paths,
                 artifact_bytes,
                 artifact_files,
                 class_is_orphan,
             });
     }
 
-    let mut tiers = [
-        TierEstimate {
-            tier: Tier::Units,
-            reclaimable_bytes: 0,
-            reclaimable_entries: 0,
-        },
-        TierEstimate {
-            tier: Tier::BuildScripts,
-            reclaimable_bytes: 0,
-            reclaimable_entries: 0,
-        },
-        TierEstimate {
-            tier: Tier::OrphanFingerprints,
-            reclaimable_bytes: 0,
-            reclaimable_entries: 0,
-        },
-    ];
     for units in groups.values_mut() {
         units.sort_by_key(|u| u.recency);
         for u in units.iter().take(units.len().saturating_sub(1)) {
@@ -382,21 +434,56 @@ fn classify_legacy_units(path: &Path, report: &mut ProfileReport) {
             } else {
                 Tier::Units
             };
-            // Fingerprint dir + its paired artifacts, reclaimed together.
-            tally(
-                &mut tiers,
+            report.reclaim.push(ReclaimItem {
                 tier,
-                u.dir_bytes + u.artifact_bytes,
-                1 + u.artifact_files,
-            );
+                // Fingerprint dir FIRST: a missing output makes the unit
+                // stale (safe rebuild); a live-looking fingerprint over
+                // missing outputs is the corruption hazard.
+                delete_first: vec![u.fp_dir.clone()],
+                delete_then: u.artifact_paths.clone(),
+                session_locks: Vec::new(),
+                bytes: u.fp_bytes + u.artifact_bytes,
+                entries: 1 + u.artifact_files,
+            });
         }
     }
-    report.tiers.extend(tiers);
+
+    // Fingerprint-less hashed artifacts: Cargo never leaves an artifact
+    // without its fingerprint (spike 0.3, A\F = 0), and the sweep runs under
+    // the build lock, so no build is mid-flight here. These are dead weight
+    // — typically residue of an interrupted sweep (fingerprint deleted,
+    // artifact deletion failed) — and re-collecting them is what makes the
+    // sweep re-runnable.
+    for (hash, d) in &deps_index {
+        if !fingerprint_hashes.contains(hash) {
+            report.reclaim.push(ReclaimItem {
+                tier: Tier::Units,
+                delete_first: Vec::new(),
+                delete_then: d.paths.clone(),
+                session_locks: Vec::new(),
+                bytes: d.bytes,
+                entries: d.files,
+            });
+        }
+    }
+    for (hash, (bytes, path)) in &build_index {
+        if !fingerprint_hashes.contains(hash) {
+            report.reclaim.push(ReclaimItem {
+                tier: Tier::BuildScripts,
+                delete_first: vec![path.clone()],
+                delete_then: Vec::new(),
+                session_locks: Vec::new(),
+                bytes: *bytes,
+                entries: 1,
+            });
+        }
+    }
 }
 
 /// One v2 unit observation.
 struct V2Unit {
     recency: SystemTime,
+    dir: PathBuf,
     dir_bytes: u64,
     is_build_script: bool,
 }
@@ -423,8 +510,22 @@ fn classify_v2_units(path: &Path, report: &mut ProfileReport) {
         for meta_dir in metas.flatten() {
             let hash_name = meta_dir.file_name().to_string_lossy().into_owned();
             let fp = meta_dir.path().join("fingerprint");
-            if !crate::unit::is_unit_hash(&hash_name) || !fp.is_dir() {
+            if !crate::unit::is_unit_hash(&hash_name) {
                 report.unparsed_kept += 1;
+                continue;
+            }
+            if !fp.is_dir() {
+                // Valid unit hash but no fingerprint half: residue of an
+                // interrupted sweep — dead weight, re-collect (same
+                // rationale as the legacy A\F rule).
+                report.reclaim.push(ReclaimItem {
+                    tier: Tier::Units,
+                    delete_first: vec![meta_dir.path()],
+                    delete_then: Vec::new(),
+                    session_locks: Vec::new(),
+                    bytes: dir_stats(&meta_dir.path()).bytes,
+                    entries: 1,
+                });
                 continue;
             }
             let mut files = Vec::new();
@@ -463,23 +564,12 @@ fn classify_v2_units(path: &Path, report: &mut ProfileReport) {
                 .or_default()
                 .push(V2Unit {
                     recency,
+                    dir: meta_dir.path(),
                     dir_bytes: size,
                     is_build_script,
                 });
         }
     }
-    let mut tiers = [
-        TierEstimate {
-            tier: Tier::Units,
-            reclaimable_bytes: 0,
-            reclaimable_entries: 0,
-        },
-        TierEstimate {
-            tier: Tier::BuildScripts,
-            reclaimable_bytes: 0,
-            reclaimable_entries: 0,
-        },
-    ];
     for entries in groups.values_mut() {
         entries.sort_by_key(|u| u.recency);
         for u in entries.iter().take(entries.len().saturating_sub(1)) {
@@ -488,10 +578,16 @@ fn classify_v2_units(path: &Path, report: &mut ProfileReport) {
             } else {
                 Tier::Units
             };
-            tally(&mut tiers, tier, u.dir_bytes, 1);
+            report.reclaim.push(ReclaimItem {
+                tier,
+                delete_first: vec![u.dir.clone()],
+                delete_then: Vec::new(),
+                session_locks: Vec::new(),
+                bytes: u.dir_bytes,
+                entries: 1,
+            });
         }
     }
-    report.tiers.extend(tiers);
 }
 
 /// Recursive size/count via metadata only. Symlinks are counted, not followed.
@@ -547,6 +643,20 @@ mod tests {
     }
 
     #[test]
+    fn plan_orders_fingerprint_before_artifacts() {
+        let t = tempfile::tempdir().unwrap();
+        let profile = t.path().join("debug");
+        lib_unit(&profile, "serde", "aaaaaaaaaaaaaaaa", 1000);
+        sleep(Duration::from_millis(60));
+        lib_unit(&profile, "serde", "bbbbbbbbbbbbbbbb", 2000);
+        let report = scan_profile(&profile, ProfileLayout::LegacyBuild);
+        assert_eq!(report.reclaim.len(), 1);
+        let item = &report.reclaim[0];
+        assert!(item.delete_first[0].ends_with("serde-aaaaaaaaaaaaaaaa"));
+        assert!(item.delete_then[0].ends_with("libserde-aaaaaaaaaaaaaaaa.rlib"));
+    }
+
+    #[test]
     fn single_hash_units_are_never_reclaimable() {
         let t = tempfile::tempdir().unwrap();
         let profile = t.path().join("debug");
@@ -554,6 +664,7 @@ mod tests {
         lib_unit(&profile, "itoa", "cccccccccccccccc", 500);
         let report = scan_profile(&profile, ProfileLayout::LegacyBuild);
         assert_eq!(report.reclaimable_bytes(), 0);
+        assert!(report.reclaim.is_empty());
     }
 
     #[test]
@@ -618,16 +729,17 @@ mod tests {
     }
 
     #[test]
-    fn incremental_keeps_newest_per_crate() {
+    fn incremental_keeps_newest_per_crate_and_collects_session_locks() {
         let t = tempfile::tempdir().unwrap();
         let profile = t.path().join("debug");
         fs::create_dir_all(profile.join(".fingerprint")).unwrap();
         fs::create_dir_all(profile.join("deps")).unwrap();
         let inc = profile.join("incremental");
-        write(&inc.join("mycrate-aaaa/s-x-y/dep-graph.bin"), 300);
+        write(&inc.join("mycrate-aaaa/s-x-y-z/dep-graph.bin"), 300);
+        write(&inc.join("mycrate-aaaa/s-x-y.lock"), 0);
         sleep(Duration::from_millis(60));
-        write(&inc.join("mycrate-bbbb/s-x-z/dep-graph.bin"), 400);
-        write(&inc.join("other_crate-cccc/s-x-w/dep-graph.bin"), 100);
+        write(&inc.join("mycrate-bbbb/s-x-w-z/dep-graph.bin"), 400);
+        write(&inc.join("other_crate-cccc/s-x-v-z/dep-graph.bin"), 100);
         let report = scan_profile(&profile, ProfileLayout::LegacyBuild);
         let inc_tier = report
             .tiers
@@ -636,6 +748,13 @@ mod tests {
             .unwrap();
         assert_eq!(inc_tier.reclaimable_bytes, 300);
         assert_eq!(inc_tier.reclaimable_entries, 1);
+        let item = report
+            .reclaim
+            .iter()
+            .find(|i| i.tier == Tier::Incremental)
+            .unwrap();
+        assert_eq!(item.session_locks.len(), 1);
+        assert!(item.session_locks[0].ends_with("s-x-y.lock"));
     }
 
     #[test]
@@ -663,6 +782,45 @@ mod tests {
             .find(|t| t.tier == Tier::Incremental)
             .unwrap();
         assert_eq!(inc_tier.reclaimable_bytes, 0);
+    }
+
+    #[test]
+    fn fingerprintless_artifacts_are_recollected() {
+        // Residue of an interrupted sweep: artifacts whose fingerprint is
+        // already gone must be reclaimable on the NEXT run (A\F = 0 is
+        // Cargo's own invariant; under the build lock nothing is mid-build).
+        let t = tempfile::tempdir().unwrap();
+        let profile = t.path().join("debug");
+        lib_unit(&profile, "serde", "bbbbbbbbbbbbbbbb", 2000); // live, with fingerprint
+        write(&profile.join("deps/libold-aaaaaaaaaaaaaaaa.rlib"), 700);
+        write(
+            &profile.join("build/old-cccccccccccccccc/build-script-build.exe"),
+            300,
+        );
+        let report = scan_profile(&profile, ProfileLayout::LegacyBuild);
+        let units = report.tiers.iter().find(|t| t.tier == Tier::Units).unwrap();
+        assert_eq!(units.reclaimable_bytes, 700);
+        let bs = report
+            .tiers
+            .iter()
+            .find(|t| t.tier == Tier::BuildScripts)
+            .unwrap();
+        assert_eq!(bs.reclaimable_bytes, 300);
+        // The live unit stays untouched.
+        assert_eq!(report.reclaimable_bytes(), 1000);
+    }
+
+    #[test]
+    fn v2_fingerprintless_unit_dir_is_recollected() {
+        let t = tempfile::tempdir().unwrap();
+        let profile = t.path().join("debug");
+        let live = profile.join("build/serde/bbbbbbbbbbbbbbbb");
+        write(&live.join("fingerprint/lib-serde"), 16);
+        write(&live.join("out/libserde-bbbbbbbbbbbbbbbb.rlib"), 2000);
+        let residue = profile.join("build/serde/aaaaaaaaaaaaaaaa");
+        write(&residue.join("out/libserde-aaaaaaaaaaaaaaaa.rlib"), 500);
+        let report = scan_profile(&profile, ProfileLayout::V2);
+        assert_eq!(report.reclaimable_bytes(), 500);
     }
 
     #[test]
@@ -713,6 +871,7 @@ mod tests {
         let units = report.tiers.iter().find(|t| t.tier == Tier::Units).unwrap();
         assert_eq!(units.reclaimable_bytes, 1016);
         assert_eq!(units.reclaimable_entries, 1);
+        assert!(report.reclaim[0].delete_first[0].ends_with("aaaaaaaaaaaaaaaa"));
     }
 
     #[test]
