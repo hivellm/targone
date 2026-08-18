@@ -145,7 +145,8 @@
       "PowerShell(gh run list --repo hivellm/targone --limit 10 2>&1)",
       "PowerShell(gh run view --job 95687576743 --repo hivellm/targone --log-failed 2>&1)",
       "PowerShell($log = gh run view 32129595598 --repo hivellm/targone --log-failed 2>&1 | Out-String; \\($log -split \"`n\"\\) | Where-Object { $_ -match 'FAILED|panicked|Summary \\\\[' } | Select-Object -First 20)",
-      "PowerShell($log = gh run view --job 95687576743 --repo hivellm/targone --log 2>&1 | Out-String; \\($log -split \"`n\"\\) | Where-Object { $_ -match 'FAILED|panicked|Summary \\\\[|error:' } | Select-Object -First 12; Write-Host '=== macos ==='; $log2 = gh run view --job 95687576806 --repo hivellm/targone --log 2>&1 | Out-String; \\($log2 -split \"`n\"\\) | Where-Object { $_ -match 'FAILED|panicked|Summary \\\\[|error:' } | Select-Object -First 12)"
+      "PowerShell($log = gh run view --job 95687576743 --repo hivellm/targone --log 2>&1 | Out-String; \\($log -split \"`n\"\\) | Where-Object { $_ -match 'FAILED|panicked|Summary \\\\[|error:' } | Select-Object -First 12; Write-Host '=== macos ==='; $log2 = gh run view --job 95687576806 --repo hivellm/targone --log 2>&1 | Out-String; \\($log2 -split \"`n\"\\) | Where-Object { $_ -match 'FAILED|panicked|Summary \\\\[|error:' } | Select-Object -First 12)",
+      "PowerShell(foreach \\($n in @\\('targone', 'cargo-targone', 'targone-core'\\)\\) { try { $r = Invoke-RestMethod -Uri \"https://crates.io/api/v1/crates/$n\" -Headers @{ 'User-Agent' = 'targone-check' }; \"$n : v$\\($r.crate.max_version\\) published\" } catch { \"$n : not found\" } })"
     ],
     "defaultMode": "acceptEdits",
     "additionalDirectories": [

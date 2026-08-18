@@ -5,7 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.1.1] - 2026-08-18
+
+### Added
+- Crate READMEs on crates.io: `cargo-targone` ships the project README;
+  `targone` ships its trust contract; `targone-core` a library overview.
+- `Release (crates.io)` workflow using **Trusted Publishing** (GitHub OIDC via
+  `rust-lang/crates-io-auth-action` — no stored token), triggered by `v*`
+  tags, with tag↔version guard, pre-publish tests, and ordered publishes
+  (`targone-core` → index wait → `cargo-targone` → `targone`).
+
+### Fixed
+- CI matrix (first run on real Linux/macOS): `task_name()` cfg-gated to
+  Windows; UNC-based network-refusal tests cfg-gated (UNC semantics are
+  Windows-only); codespell inline ignores for verbatim pt-BR command output.
+
+## [0.1.0] - 2026-08-18
 
 ### Added — analysis & spikes (Phase 0)
 
@@ -135,4 +150,5 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   identity-recency already subsumes it, F-046) and the PATH-shim trigger
   (post-1.0, higher blast radius).
 
-[Unreleased]: https://github.com/hivellm/targone/commits/main
+[0.1.1]: https://github.com/hivellm/targone/compare/v0.1.0...v0.1.1
+[0.1.0]: https://github.com/hivellm/targone/commits/v0.1.0

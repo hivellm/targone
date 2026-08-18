@@ -1,6 +1,7 @@
 [package]
 name = "cargo-targone"
 description = "Automatic, safe garbage collection for Rust target directories — the Targone engine"
+readme = "../../README.md"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

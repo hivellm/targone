@@ -3,7 +3,7 @@ resolver = "2"
 members = ["crates/targone-core", "crates/cargo-targone", "crates/targone"]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 rust-version = "1.89"
 license = "Apache-2.0"
@@ -11,7 +11,7 @@ repository = "https://github.com/hivellm/targone"
 authors = ["HiveLLM Contributors"]
 
 [workspace.dependencies]
-targone-core = { path = "crates/targone-core", version = "0.1.0" }
+targone-core = { path = "crates/targone-core", version = "0.1.1" }
 walkdir = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

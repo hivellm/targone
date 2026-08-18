@@ -1,0 +1,73 @@
+# Publishes the three crates to crates.io via Trusted Publishing (OIDC) —
+# no long-lived token stored anywhere. Trigger: push a `v*` tag matching the
+# workspace version (e.g. `git tag v0.1.1 && git push origin v0.1.1`).
+#
+# One-time setup on crates.io (crate Settings → Trusted Publishing → GitHub),
+# for EACH of targone-core, cargo-targone, targone:
+#   repository owner: hivellm   repository: targone   workflow: release.yml
+name: Release (crates.io)
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    environment: crates-io
+    permissions:
+      contents: read
+      id-token: write # OIDC for Trusted Publishing
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Verify tag matches the workspace version
+        run: |
+          version="$(cargo metadata --no-deps --format-version 1 \
+            | grep -o '"version":"[^"]*"' | head -1 | cut -d'"' -f4)"
+          tag="${GITHUB_REF_NAME#v}"
+          if [ "$version" != "$tag" ]; then
+            echo "::error::tag v$tag does not match workspace version $version"
+            exit 1
+          fi
+
+      - name: Test before publishing
+        run: cargo test --workspace
+
+      - name: Authenticate with crates.io (Trusted Publishing)
+        id: auth
+        uses: rust-lang/crates-io-auth-action@v1
+
+      - name: Publish targone-core
+        run: cargo publish -p targone-core
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
+
+      - name: Wait for targone-core in the sparse index
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          for i in $(seq 1 30); do
+            if curl -fsSL "https://index.crates.io/ta/rg/targone-core" | grep -q "\"vers\":\"$version\""; then
+              echo "targone-core $version is indexed"; exit 0
+            fi
+            echo "not indexed yet, retry $i"; sleep 10
+          done
+          echo "::error::targone-core $version never appeared in the index"; exit 1
+
+      - name: Publish cargo-targone
+        run: cargo publish -p cargo-targone
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
+
+      - name: Publish targone (beacon)
+        run: cargo publish -p targone
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}

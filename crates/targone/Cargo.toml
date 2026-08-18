@@ -7,6 +7,7 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 authors.workspace = true
+readme = "README.md"
 build = "build.rs"
 
 # Zero dependencies, on purpose: this crate is compiled into every adopter's

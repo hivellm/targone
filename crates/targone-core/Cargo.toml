@@ -1,6 +1,7 @@
 [package]
 name = "targone-core"
 description = "Discovery, layout probing, and classification of Rust target directories — the read-only core of Targone"
+readme = "README.md"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
