@@ -17,7 +17,7 @@
 - [x] 4.1 `cargo targone gc [PATHS…]` — dry-run DEFAULT, `--apply` to delete, `--tier` filter, human + `--json` summaries (freed per tier, skipped-locked dirs, residue)
 
 ## 5. Verification gates (the deliverable)
-- [ ] 5.1 Concurrency test: sweep loop vs continuous `cargo build`/`cargo check` on the same target dir, ≥100 iterations, zero build failures, zero corrupt artifacts (Windows + Linux CI)
+- [x] 5.1 Concurrency test: sweep loop vs continuous `cargo build`/`cargo check` on the same target dir, ≥100 iterations, zero build failures, zero corrupt artifacts (Windows + Linux CI)
 - [x] 5.2 Recovery test: after full Policy A sweep, `cargo build` on unchanged tree performs ZERO recompilations (F-042 at project scale)
 - [x] 5.3 Interrupt test: kill sweeper mid-delete; target dir remains buildable
 - [ ] 5.4 On the reference machine: 300.8 GB → ≤45 GB and a full `cargo test` on Cortex passes afterwards

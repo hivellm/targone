@@ -423,6 +423,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "targone"
+version = "0.1.0"
+dependencies = [
+ "tempfile",
+]
+
+[[package]]
 name = "targone-core"
 version = "0.1.0"
 dependencies = [

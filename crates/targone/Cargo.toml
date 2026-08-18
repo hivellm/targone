@@ -1,0 +1,20 @@
+[package]
+name = "targone"
+description = "target/, gone — beacon crate: registers your project with the Targone engine so its build directories get garbage-collected automatically. Never deletes anything itself."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+build = "build.rs"
+
+# Zero dependencies, on purpose: this crate is compiled into every adopter's
+# build graph and must stay auditable in five minutes.
+[dependencies]
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true

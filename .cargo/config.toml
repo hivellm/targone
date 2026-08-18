@@ -1,0 +1,4 @@
+# Dev-repo settings: the in-tree beacon crate must not self-register or hint
+# during Targone's own development builds.
+[env]
+TARGONE_DISABLE = "1"
