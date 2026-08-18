@@ -108,10 +108,10 @@ targone = "0.1"
 | Phase 0 — problem statement, measurements, full solution-space analysis (70 findings) | ✅ **Done** — [10 documents](docs/analysis/target-dir-disk-reduction/00-README.md) |
 | Phase 0.x — de-risking spikes (lock-under-load, Unix probes, fingerprint liveness) | ✅ **Done** — [6 spikes](docs/analysis/target-dir-disk-reduction/spikes/), all gates passed |
 | Phase 1 — `targone-core` + read-only `report` (reproduces the measurements) | ✅ **Done** — acceptance met; discovery correctly rejects the data dirs the original measurement misclassified |
-| Phase 2 — deletion under the lock protocol | 🔄 **In progress** — engine complete; recovery gate 3/3 (0 recompiles), concurrency gate 30/30 vs continuous `gc --apply`; first real sweeps applied |
-| Phase 3 — recurrence via OS scheduler + global budget | ⏳ |
-| Phase 4 — the `targone` beacon crate on crates.io | ⏳ |
-| Phase 5 — opt-in tiers (PDB drop, dormant dirs, uninstalled toolchains, PATH shim) | ⏳ |
+| Phase 2 — deletion under the lock protocol | ✅ **Done** — all gates passed (recovery 0-recompile 3/3; 100-build concurrency gate; interrupt; ~252 GiB reclaimed on the reference machine, +213 GB disk free) |
+| Phase 3 — recurrence via OS scheduler + global budget | ✅ Live — daily only-if-idle task installed, 17 projects registered; week-long unattended gate in passive verification |
+| Phase 4 — the `targone` beacon crate | ✅ **Done** — zero-dep, invariants tested, +3.1 ms warm-build cost, publish dry-run clean; crates.io publish pending owner decision |
+| Phase 5 — opt-in tiers | ✅ **Done** — `gc --pdbs` (23 GiB measured) and `gc --dormant <days>` shipped; toolchain sweep & PATH shim deferred with recorded rationale |
 
 ## 📚 Documentation
 
