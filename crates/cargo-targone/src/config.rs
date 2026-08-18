@@ -17,6 +17,11 @@ pub struct MachineConfig {
     /// Roots scanned by `schedule run` in addition to registry entries.
     #[serde(default)]
     pub roots: Vec<PathBuf>,
+    /// Opt-in tier 5: also reclaim .pdb debug symbols on scheduled runs.
+    #[serde(default)]
+    pub pdbs: bool,
+    /// Opt-in tier 6: wipe profiles idle longer than this many days.
+    pub dormant_days: Option<u64>,
 }
 
 impl MachineConfig {

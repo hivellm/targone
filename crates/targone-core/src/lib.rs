@@ -19,5 +19,8 @@ pub use budget::{parse_size, select_for_budget, BudgetPlan};
 pub use discover::{discover, TargetDir};
 pub use layout::ProfileLayout;
 pub use registry::{Registry, RegistryEntry};
-pub use scan::{scan_target_dir, PoolStats, ProfileReport, TargetReport, Tier, TierEstimate};
+pub use scan::{
+    append_dormant_item, append_pdb_items, newest_compile, scan_target_dir, PoolStats,
+    ProfileReport, TargetReport, Tier, TierEstimate,
+};
 pub use sweep::{sweep_profile, SweepOutcome};

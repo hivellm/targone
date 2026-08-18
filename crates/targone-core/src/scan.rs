@@ -56,6 +56,13 @@ pub enum Tier {
     /// Superseded hash-absent fingerprint dirs (no artifacts to pair with),
     /// keep-newest within the orphan class only (spike 0.3 rule c.2).
     OrphanFingerprints,
+    /// OPT-IN (tier 5, F-042): every `.pdb` under `deps/`/`build/` — terminal
+    /// debug-symbol outputs nothing reads back; worst case is re-linking to
+    /// regenerate symbols for already-built binaries.
+    Pdb,
+    /// OPT-IN (tier 6, F-043's one legitimate use of age): full pool wipe of
+    /// a profile whose own newest compile is older than the cutoff.
+    Dormant,
 }
 
 /// One concrete deletion unit. `delete_first` paths (directories) go before
@@ -590,6 +597,175 @@ fn classify_v2_units(path: &Path, report: &mut ProfileReport) {
     }
 }
 
+/// Newest compile activity of a profile: max mtime over FILES beneath
+/// `.fingerprint/` and `build/`. File mtimes deliberately, not directory
+/// mtimes — our own sweeps disturb directory mtimes, and F-006 established
+/// that fingerprint file mtimes mean "last actually compiled", which is
+/// exactly the dormancy signal F-043 calls for. `None` = no evidence ⇒ the
+/// caller must NOT treat the profile as dormant (fail-open).
+pub fn newest_compile(profile: &Path) -> Option<SystemTime> {
+    let mut newest: Option<SystemTime> = None;
+    for base in [profile.join(".fingerprint"), profile.join("build")] {
+        for entry in WalkDir::new(base)
+            .max_depth(4)
+            .follow_links(false)
+            .into_iter()
+            .flatten()
+        {
+            if entry.file_type().is_file() {
+                if let Ok(meta) = entry.metadata() {
+                    if let Ok(m) = meta.modified() {
+                        newest = Some(newest.map_or(m, |n| n.max(m)));
+                    }
+                }
+            }
+        }
+    }
+    newest
+}
+
+/// Tier 5 (opt-in, F-042): plan every `.pdb` under `deps/` and `build/` that
+/// the base plan does not already cover. Debug symbols are terminal outputs;
+/// regenerating them costs a re-link, never a re-compile.
+pub fn append_pdb_items(report: &mut ProfileReport) {
+    if !matches!(
+        report.layout,
+        ProfileLayout::LegacyBuild | ProfileLayout::V2
+    ) {
+        return;
+    }
+    let planned_files: std::collections::BTreeSet<&Path> = report
+        .reclaim
+        .iter()
+        .flat_map(|i| i.delete_then.iter().map(PathBuf::as_path))
+        .collect();
+    let planned_dirs: Vec<&Path> = report
+        .reclaim
+        .iter()
+        .flat_map(|i| i.delete_first.iter().map(PathBuf::as_path))
+        .collect();
+    let mut files = Vec::new();
+    let mut bytes = 0u64;
+    for pool in ["deps", "build"] {
+        for entry in WalkDir::new(report.path.join(pool))
+            .follow_links(false)
+            .into_iter()
+            .flatten()
+        {
+            if !entry.file_type().is_file() {
+                continue;
+            }
+            let is_pdb = entry
+                .path()
+                .extension()
+                .is_some_and(|e| e.eq_ignore_ascii_case("pdb"));
+            if !is_pdb {
+                continue;
+            }
+            let p = entry.path();
+            if planned_files.contains(p) || planned_dirs.iter().any(|d| p.starts_with(d)) {
+                continue; // already reclaimed by the base plan
+            }
+            if let Ok(meta) = entry.metadata() {
+                bytes += meta.len();
+                files.push(p.to_path_buf());
+            }
+        }
+    }
+    if files.is_empty() {
+        return;
+    }
+    let entries = files.len() as u64;
+    report.reclaim.push(ReclaimItem {
+        tier: Tier::Pdb,
+        delete_first: Vec::new(),
+        delete_then: files,
+        session_locks: Vec::new(),
+        bytes,
+        entries,
+    });
+    report.tiers.push(TierEstimate {
+        tier: Tier::Pdb,
+        reclaimable_bytes: bytes,
+        reclaimable_entries: entries,
+    });
+}
+
+/// Lock and marker files that must survive any wipe (deleting a lock file we
+/// hold open would fail on Windows anyway; markers identify the dir).
+const KEEP_IN_PROFILE: &[&str] = &[
+    ".cargo-lock",
+    ".cargo-build-lock",
+    ".cargo-artifact-lock",
+    "CACHEDIR.TAG",
+];
+
+/// Tier 6 (opt-in, F-043): when the profile's own newest compile is at or
+/// before `cutoff`, REPLACE the plan with one full-pool wipe (locks and
+/// markers kept). Returns whether the profile was classified dormant.
+/// No compile evidence at all ⇒ not dormant (fail-open).
+pub fn append_dormant_item(report: &mut ProfileReport, cutoff: SystemTime) -> bool {
+    if !matches!(
+        report.layout,
+        ProfileLayout::LegacyBuild | ProfileLayout::V2
+    ) {
+        return false;
+    }
+    let Some(newest) = newest_compile(&report.path) else {
+        return false;
+    };
+    if newest > cutoff {
+        return false;
+    }
+    let mut delete_first = Vec::new();
+    let mut bytes = 0u64;
+    let mut entries = 0u64;
+    for pool in PROFILE_POOLS {
+        let p = report.path.join(pool);
+        if p.is_dir() {
+            let stats = dir_stats(&p);
+            bytes += stats.bytes;
+            entries += 1;
+            delete_first.push(p);
+        }
+    }
+    let mut delete_then = Vec::new();
+    if let Ok(children) = fs::read_dir(&report.path) {
+        for e in children.flatten() {
+            let name = e.file_name().to_string_lossy().into_owned();
+            if KEEP_IN_PROFILE.contains(&name.as_str()) {
+                continue;
+            }
+            if let Ok(meta) = e.metadata() {
+                if meta.is_file() {
+                    bytes += meta.len();
+                    entries += 1;
+                    delete_then.push(e.path());
+                }
+            }
+        }
+    }
+    // The wipe supersedes every finer-grained item (their paths live inside
+    // the pools being deleted) — replace, don't stack, so estimates stay
+    // honest.
+    report.reclaim.clear();
+    report.tiers.clear();
+    report.reclaim.push(ReclaimItem {
+        tier: Tier::Dormant,
+        delete_first,
+        delete_then,
+        session_locks: Vec::new(),
+        bytes,
+        entries,
+    });
+    report.tiers.push(TierEstimate {
+        tier: Tier::Dormant,
+        reclaimable_bytes: bytes,
+        reclaimable_entries: entries,
+    });
+    true
+}
+
 /// Recursive size/count via metadata only. Symlinks are counted, not followed.
 pub fn dir_stats(path: &Path) -> PoolStats {
     let mut stats = PoolStats::default();
@@ -872,6 +1048,73 @@ mod tests {
         assert_eq!(units.reclaimable_bytes, 1016);
         assert_eq!(units.reclaimable_entries, 1);
         assert!(report.reclaim[0].delete_first[0].ends_with("aaaaaaaaaaaaaaaa"));
+    }
+
+    #[test]
+    fn pdb_tier_collects_only_unplanned_pdbs() {
+        let t = tempfile::tempdir().unwrap();
+        let profile = t.path().join("debug");
+        // A superseded gen whose artifacts include a .pdb (already planned)…
+        lib_unit(&profile, "serde", "aaaaaaaaaaaaaaaa", 1000);
+        write(&profile.join("deps/serde-aaaaaaaaaaaaaaaa.pdb"), 400);
+        sleep(Duration::from_millis(60));
+        lib_unit(&profile, "serde", "bbbbbbbbbbbbbbbb", 2000);
+        // …and a live gen's pdb (not otherwise reclaimable).
+        write(&profile.join("deps/serde-bbbbbbbbbbbbbbbb.pdb"), 700);
+        write(
+            &profile.join("build/x-cccccccccccccccc/build_script_build.pdb"),
+            300,
+        );
+        let mut report = scan_profile(&profile, ProfileLayout::LegacyBuild);
+        let base = report.reclaimable_bytes();
+        append_pdb_items(&mut report);
+        let pdb = report.tiers.iter().find(|t| t.tier == Tier::Pdb).unwrap();
+        // Only the live pdb (700) + orphanless build pdb… note x-cccc has no
+        // fingerprint → its whole dir is already planned by re-collection,
+        // so only 700 lands in the Pdb tier.
+        assert_eq!(pdb.reclaimable_bytes, 700);
+        assert_eq!(report.reclaimable_bytes(), base + 700);
+    }
+
+    #[test]
+    fn dormant_profile_is_wiped_wholesale_keeping_locks() {
+        let t = tempfile::tempdir().unwrap();
+        let profile = t.path().join("debug");
+        lib_unit(&profile, "serde", "aaaaaaaaaaaaaaaa", 1000);
+        write(&profile.join("incremental/x-aa/s-a-b-c/o.bin"), 200);
+        write(&profile.join("app.exe"), 500);
+        write(&profile.join(".cargo-build-lock"), 0);
+        let mut report = scan_profile(&profile, ProfileLayout::LegacyBuild);
+        // Cutoff in the future ⇒ everything is older ⇒ dormant.
+        let dormant =
+            append_dormant_item(&mut report, SystemTime::now() + Duration::from_secs(3600));
+        assert!(dormant);
+        assert_eq!(report.reclaim.len(), 1);
+        let item = &report.reclaim[0];
+        assert_eq!(item.tier, Tier::Dormant);
+        assert!(item.delete_then.iter().any(|p| p.ends_with("app.exe")));
+        assert!(!item
+            .delete_then
+            .iter()
+            .any(|p| p.ends_with(".cargo-build-lock")));
+        // Fresh profile with a recent compile is NOT dormant.
+        let mut fresh = scan_profile(&profile, ProfileLayout::LegacyBuild);
+        let past_cutoff = SystemTime::now() - Duration::from_secs(30 * 24 * 3600);
+        assert!(!append_dormant_item(&mut fresh, past_cutoff));
+    }
+
+    #[test]
+    fn empty_profile_is_never_dormant() {
+        // No compile evidence ⇒ fail-open, never wipe.
+        let t = tempfile::tempdir().unwrap();
+        let profile = t.path().join("debug");
+        fs::create_dir_all(profile.join(".fingerprint")).unwrap();
+        fs::create_dir_all(profile.join("deps")).unwrap();
+        let mut report = scan_profile(&profile, ProfileLayout::LegacyBuild);
+        assert!(!append_dormant_item(
+            &mut report,
+            SystemTime::now() + Duration::from_secs(3600)
+        ));
     }
 
     #[test]

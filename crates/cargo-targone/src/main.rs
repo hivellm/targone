@@ -52,6 +52,14 @@ enum Command {
         /// Restrict to specific tiers (repeatable). Default: all tiers.
         #[arg(long, value_enum)]
         tier: Vec<TierArg>,
+        /// OPT-IN tier 5: also reclaim every .pdb under deps/ and build/
+        /// (debug symbols; worst case is a re-link to regenerate them).
+        #[arg(long)]
+        pdbs: bool,
+        /// OPT-IN tier 6: full pool wipe of profiles whose newest compile is
+        /// older than DAYS (age relative to the dir's own last build, F-043).
+        #[arg(long, value_name = "DAYS")]
+        dormant: Option<u64>,
         /// Emit the outcome summary as JSON on stdout.
         #[arg(long)]
         json: bool,
@@ -113,8 +121,10 @@ fn main() -> ExitCode {
             paths,
             apply,
             tier,
+            pdbs,
+            dormant,
             json,
-        } => gc(paths, apply, &tier, json),
+        } => gc(paths, apply, &tier, pdbs, dormant, json),
         Command::Scan { roots } => scan_cmd(roots),
         Command::Schedule { action } => match action {
             ScheduleAction::Install => print_result(schedule::install()),
@@ -170,7 +180,7 @@ fn filter_tiers(reports: &mut [TargetReport], tiers: &[TierArg]) {
 }
 
 fn report(paths: Vec<PathBuf>, json: bool) -> ExitCode {
-    let reports = scan_all(paths);
+    let mut reports = scan_all(paths);
     if json {
         match serde_json::to_string_pretty(&reports) {
             Ok(s) => println!("{s}"),
@@ -197,6 +207,24 @@ fn report(paths: Vec<PathBuf>, json: bool) -> ExitCode {
             }
         }
     }
+    // Quantified opt-in advice (analysis F-042/F-070): measured on the dirs
+    // just scanned, never applied automatically.
+    let mut pdb_bytes = 0u64;
+    for r in &mut reports {
+        for p in &mut r.profiles {
+            targone_core::append_pdb_items(p);
+            if let Some(t) = p.tiers.iter().find(|t| t.tier == targone_core::Tier::Pdb) {
+                pdb_bytes += t.reclaimable_bytes;
+            }
+        }
+    }
+    if pdb_bytes > 64 * 1024 * 1024 {
+        println!(
+            "advice: `gc --pdbs` would reclaim a further {} of debug symbols (worst case: a re-link regenerates them)",
+            human(pdb_bytes)
+        );
+    }
+    println!("advice: `gc --dormant <days>` wipes profiles idle longer than <days>; set `pdbs`/`dormant_days` in {} for scheduled runs", targone_dir().join("config.toml").display());
     ExitCode::SUCCESS
 }
 
@@ -281,9 +309,39 @@ fn run_sweep(reports: &[TargetReport], run_id: &str, audit: &mut dyn Write) -> S
     totals
 }
 
-fn gc(paths: Vec<PathBuf>, apply: bool, tiers: &[TierArg], json: bool) -> ExitCode {
+/// Apply the opt-in tiers to a scanned report set. Dormancy first — its
+/// whole-pool wipe supersedes finer plans — then PDBs (which skip anything
+/// already planned).
+fn apply_opt_ins(reports: &mut [TargetReport], pdbs: bool, dormant_days: Option<u64>) {
+    if !pdbs && dormant_days.is_none() {
+        return;
+    }
+    let cutoff = dormant_days
+        .map(|d| SystemTime::now() - std::time::Duration::from_secs(d.saturating_mul(86_400)));
+    for r in reports.iter_mut() {
+        for p in &mut r.profiles {
+            if let Some(cutoff) = cutoff {
+                let _ = targone_core::append_dormant_item(p, cutoff);
+            }
+            if pdbs {
+                targone_core::append_pdb_items(p);
+            }
+        }
+    }
+}
+
+fn gc(
+    paths: Vec<PathBuf>,
+    apply: bool,
+    tiers: &[TierArg],
+    pdbs: bool,
+    dormant: Option<u64>,
+    json: bool,
+) -> ExitCode {
     let mut reports = scan_all(paths);
     filter_tiers(&mut reports, tiers);
+    apply_opt_ins(&mut reports, pdbs, dormant);
+    reports.sort_by_key(|r| std::cmp::Reverse(r.reclaimable_bytes()));
     if reports.is_empty() {
         println!("No target directories found under the given paths.");
         return ExitCode::SUCCESS;
@@ -440,7 +498,8 @@ fn scheduled_run() -> ExitCode {
         return ExitCode::SUCCESS;
     }
 
-    let reports = scan_all(roots);
+    let mut reports = scan_all(roots);
+    apply_opt_ins(&mut reports, cfg.pdbs, cfg.dormant_days);
     let pairs: Vec<(u64, u64)> = reports
         .iter()
         .map(|r| (r.total_bytes(), r.reclaimable_bytes()))

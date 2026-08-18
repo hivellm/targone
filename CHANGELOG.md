@@ -118,4 +118,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the beacon does not touch the scheduler — that would violate the
   no-spawned-processes invariant.)
 
+### Added — opt-in tiers (Phase 5, all OFF by default)
+
+- **`gc --pdbs`** (tier 5, F-042): reclaims every `.pdb` under `deps/`/`build/`
+  not already covered by the base plan — debug symbols are terminal outputs;
+  worst case is a re-link. Measured on the reference machine post-sweep:
+  a further 23.0 GiB available.
+- **`gc --dormant <days>`** (tier 6, F-043): full pool wipe of profiles whose
+  own newest compile (fingerprint file mtimes — the F-006 "last actually
+  compiled" signal, immune to sweep-disturbed directory mtimes) is older than
+  the cutoff; locks and markers kept; no compile evidence = never dormant
+  (fail-open).
+- Both honored by scheduled runs via `pdbs`/`dormant_days` in `config.toml`;
+  `report` prints quantified advice for them.
+- Deferred with recorded rationale: tier 7 (uninstalled-toolchain sweep —
+  identity-recency already subsumes it, F-046) and the PATH-shim trigger
+  (post-1.0, higher blast radius).
+
 [Unreleased]: https://github.com/hivellm/targone/commits/main
