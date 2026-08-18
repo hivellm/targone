@@ -41,7 +41,32 @@ enum Command {
         /// Actually delete. Without this flag, gc only prints what it would do.
         #[arg(long)]
         apply: bool,
+        /// Restrict to specific tiers (repeatable). Default: all tiers.
+        #[arg(long, value_enum)]
+        tier: Vec<TierArg>,
+        /// Emit the outcome summary as JSON on stdout.
+        #[arg(long)]
+        json: bool,
     },
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+enum TierArg {
+    Incremental,
+    Units,
+    BuildScripts,
+    OrphanFingerprints,
+}
+
+impl From<TierArg> for targone_core::Tier {
+    fn from(t: TierArg) -> Self {
+        match t {
+            TierArg::Incremental => targone_core::Tier::Incremental,
+            TierArg::Units => targone_core::Tier::Units,
+            TierArg::BuildScripts => targone_core::Tier::BuildScripts,
+            TierArg::OrphanFingerprints => targone_core::Tier::OrphanFingerprints,
+        }
+    }
 }
 
 fn main() -> ExitCode {
@@ -54,7 +79,31 @@ fn main() -> ExitCode {
     let cli = Cli::parse_from(args);
     match cli.command {
         Command::Report { paths, json } => report(paths, json),
-        Command::Gc { paths, apply } => gc(paths, apply),
+        Command::Gc {
+            paths,
+            apply,
+            tier,
+            json,
+        } => gc(paths, apply, &tier, json),
+    }
+}
+
+/// Restrict every profile's plan (and derived estimates) to the given tiers.
+fn filter_tiers(reports: &mut [TargetReport], tiers: &[TierArg]) {
+    if tiers.is_empty() {
+        return;
+    }
+    let selected: Vec<targone_core::Tier> = tiers.iter().map(|&t| t.into()).collect();
+    for r in reports.iter_mut() {
+        for p in &mut r.profiles {
+            p.reclaim.retain(|i| selected.contains(&i.tier));
+            for est in &mut p.tiers {
+                if !selected.contains(&est.tier) {
+                    est.reclaimable_bytes = 0;
+                    est.reclaimable_entries = 0;
+                }
+            }
+        }
     }
 }
 
@@ -120,15 +169,26 @@ fn print_table(reports: &[TargetReport]) {
     );
 }
 
-fn gc(paths: Vec<PathBuf>, apply: bool) -> ExitCode {
-    let reports = scan_all(paths);
+fn gc(paths: Vec<PathBuf>, apply: bool, tiers: &[TierArg], json: bool) -> ExitCode {
+    let mut reports = scan_all(paths);
+    filter_tiers(&mut reports, tiers);
     if reports.is_empty() {
         println!("No target directories found under the given paths.");
         return ExitCode::SUCCESS;
     }
     if !apply {
-        print_table(&reports);
-        println!("\nDRY RUN — nothing was deleted. Pass --apply to reclaim.");
+        if json {
+            match serde_json::to_string_pretty(&reports) {
+                Ok(s) => println!("{s}"),
+                Err(e) => {
+                    eprintln!("error: failed to serialize report: {e}");
+                    return ExitCode::FAILURE;
+                }
+            }
+        } else {
+            print_table(&reports);
+            println!("\nDRY RUN — nothing was deleted. Pass --apply to reclaim.");
+        }
         return ExitCode::SUCCESS;
     }
 
@@ -147,9 +207,17 @@ fn gc(paths: Vec<PathBuf>, apply: bool) -> ExitCode {
         }
     };
 
+    #[derive(serde::Serialize)]
+    struct DirSummary {
+        root: PathBuf,
+        freed_bytes: u64,
+        notes: Vec<String>,
+    }
+
     let mut freed = 0u64;
     let mut residue = 0u64;
     let mut skipped_locked = 0u64;
+    let mut summaries: Vec<DirSummary> = Vec::new();
     for r in &reports {
         let mut dir_freed = 0u64;
         let mut notes: Vec<String> = Vec::new();
@@ -184,10 +252,33 @@ fn gc(paths: Vec<PathBuf>, apply: bool) -> ExitCode {
             }
         }
         freed += dir_freed;
-        println!("{:>10} freed  {}", human(dir_freed), r.root.display());
-        for n in notes {
-            println!("            note: {n}");
+        if json {
+            summaries.push(DirSummary {
+                root: r.root.clone(),
+                freed_bytes: dir_freed,
+                notes,
+            });
+        } else {
+            println!("{:>10} freed  {}", human(dir_freed), r.root.display());
+            for n in notes {
+                println!("            note: {n}");
+            }
         }
+    }
+    if json {
+        let summary = serde_json::json!({
+            "run": run_id,
+            "freed_bytes": freed,
+            "residue_paths": residue,
+            "profiles_skipped_locked": skipped_locked,
+            "dirs": summaries,
+        });
+        match serde_json::to_string_pretty(&summary) {
+            Ok(s) => println!("{s}"),
+            Err(e) => eprintln!("error: failed to serialize summary: {e}"),
+        }
+        let _ = audit.flush();
+        return ExitCode::SUCCESS;
     }
     println!(
         "{:>10} freed  TOTAL ({} dirs; {} profiles skipped by live builds; {} residue paths)",

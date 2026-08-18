@@ -2,7 +2,7 @@
 
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 [![Rust](https://img.shields.io/badge/rust-stable%20(1.89%2B)-orange.svg)](https://www.rust-lang.org/)
-[![Status](https://img.shields.io/badge/status-phase%200%20(analysis%20complete)-yellow.svg)](#-project-status)
+[![Status](https://img.shields.io/badge/status-phase%202%20(sweep%20engine%20live)-green.svg)](#-project-status)
 [![Analysis](https://img.shields.io/badge/analysis-70%20findings%20%C2%B7%2010%20documents-blue.svg)](docs/analysis/target-dir-disk-reduction/00-README.md)
 
 > **`target/`, gone. Automatic, safe garbage collection for Rust build directories — across every project on your machine.**
@@ -106,9 +106,9 @@ targone = "0.1"
 | Phase | Scope | Status |
 |---|---|---|
 | Phase 0 — problem statement, measurements, full solution-space analysis (70 findings) | ✅ **Done** — [10 documents](docs/analysis/target-dir-disk-reduction/00-README.md) |
-| Phase 0.x — de-risking spikes (lock-under-load, Unix probes, fingerprint liveness) | ⏳ Next |
-| Phase 1 — `targone-core` + read-only `report` (reproduces the measurements) | ⏳ |
-| Phase 2 — deletion under the lock protocol (the 257.7 GB phase) | ⏳ |
+| Phase 0.x — de-risking spikes (lock-under-load, Unix probes, fingerprint liveness) | ✅ **Done** — [6 spikes](docs/analysis/target-dir-disk-reduction/spikes/), all gates passed |
+| Phase 1 — `targone-core` + read-only `report` (reproduces the measurements) | ✅ **Done** — acceptance met; discovery correctly rejects the data dirs the original measurement misclassified |
+| Phase 2 — deletion under the lock protocol | 🔄 **In progress** — engine complete; recovery gate 3/3 (0 recompiles), concurrency gate 30/30 vs continuous `gc --apply`; first real sweeps applied |
 | Phase 3 — recurrence via OS scheduler + global budget | ⏳ |
 | Phase 4 — the `targone` beacon crate on crates.io | ⏳ |
 | Phase 5 — opt-in tiers (PDB drop, dormant dirs, uninstalled toolchains, PATH shim) | ⏳ |

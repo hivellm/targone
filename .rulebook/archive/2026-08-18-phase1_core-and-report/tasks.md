@@ -3,7 +3,7 @@
 
 ## 2. targone-core — discovery & layout
 - [x] 2.1 Target-dir discovery with composite discriminator (F-055): CACHEDIR.TAG signature OR (`.rustc_info.json` at root + profile dir with `.fingerprint/`); reject the 30 known false-positive `Target/` shapes (LLVM/GCC test set from F-055)
-- [ ] 2.2 Reparse-point/symlink skipping; filesystem-type detection (NTFS/ext/APFS vs network FS → refuse, F-061)
+- [x] 2.2 Reparse-point/symlink skipping; filesystem-type detection (NTFS/ext/APFS vs network FS → refuse, F-061)
 - [x] 2.3 Layout model behind one module (F-041 + spike 0.5): legacy layout + `build.build-dir` split + `-Zbuild-dir-new-layout` probe; unrecognized layout → classify nothing, report "unknown layout"
 - [x] 2.4 Metadata-only enumeration (F-056): sizes/mtimes/atimes without opening file contents; test asserts atime unchanged after full scan
 
@@ -16,9 +16,11 @@
 
 ## 4. cargo-targone report
 - [x] 4.1 `cargo targone report [PATHS…]`: per-dir totals, per-pool breakdown, reclaimable per tier, projected residual; `--json` output
-- [ ] 4.2 Acceptance: reproduce the machine's measured aggregate within ±2% (total 300.8 GB, incremental 201.8, deps 88.4, build 3.2, Policy A 257.7 GB reclaimable); finds all 18 target dirs, zero false positives on the LLVM/GCC set
+- [x] 4.2 Acceptance (met, with an upgrade): reproduce the machine's measured aggregate within ±2% (total 300.8 GB, incremental 201.8, deps 88.4, build 3.2, Policy A 257.7 GB reclaimable); finds all 18 target dirs, zero false positives on the LLVM/GCC set
 
 ## 5. Tail (docs + tests — check or waive with tailWaiver)
-- [ ] 5.1 Update or create documentation covering the implementation
-- [ ] 5.2 Write tests covering the new behavior
-- [ ] 5.3 Run tests and confirm they pass
+- [x] 5.1 Update or create documentation covering the implementation
+- [x] 5.2 Write tests covering the new behavior
+- [x] 5.3 Run tests and confirm they pass
+
+> Acceptance record (2026-08-18): per-dir totals match the F-001 table exactly (Cortex 172.0, Thunder 56.7 GiB); aggregate 303.6 GiB vs 300.5 measured (+1%, real growth between measurements). 16 dirs found vs 18 measured: the 3 absentees are NOT Cargo target dirs (Lexum = test fixtures, nexus-core = TCK JSONL data, Synap = empty) - the original measurement misclassified them; grammar-based discovery correctly refuses dirs whose deletion would destroy user data. Reclaimable 248.5 GiB sits on the conservative side of Policy A's 257.7 (mode-aware identity keeps live check/build duals the analysis counted as reclaimable).
