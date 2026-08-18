@@ -638,18 +638,19 @@ mod tests {
         }
     }
 
+    fn all_notes(totals: &SweepTotals) -> String {
+        totals
+            .dirs
+            .iter()
+            .flat_map(|d| d.notes.iter().cloned())
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
     #[test]
-    fn run_sweep_notes_refusals_and_errors() {
-        // A network profile is refused; a profile whose path is a FILE makes
-        // the lock open fail (a genuine sweep error).
-        let refused = TargetReport {
-            root: PathBuf::from(r"\\no-such-host\share\target"),
-            profiles: vec![bare_profile(
-                PathBuf::from(r"\\no-such-host\share\target\debug"),
-                ProfileLayout::LegacyBuild,
-            )],
-            root_pools: Default::default(),
-        };
+    fn run_sweep_notes_errors() {
+        // A profile whose path is a FILE makes the lock open fail — a
+        // genuine sweep error, reported as a note, never a crash.
         let t = tempfile::tempdir().unwrap();
         let file_as_profile = t.path().join("iamafile");
         fs::write(&file_as_profile, b"x").unwrap();
@@ -659,15 +660,35 @@ mod tests {
             root_pools: Default::default(),
         };
         let mut audit = Vec::new();
-        let totals = run_sweep(&[refused, errored], "test", &mut audit);
-        let notes = totals
-            .dirs
-            .iter()
-            .flat_map(|d| d.notes.iter().cloned())
-            .collect::<Vec<_>>()
-            .join("\n");
-        assert!(notes.contains("refused (network filesystem)"), "{notes}");
-        assert!(notes.contains("error:"), "{notes}");
+        let totals = run_sweep(&[errored], "test", &mut audit);
+        assert!(
+            all_notes(&totals).contains("error:"),
+            "{}",
+            all_notes(&totals)
+        );
+        assert_eq!(totals.freed_bytes, 0);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn run_sweep_notes_network_refusals() {
+        // UNC semantics are Windows-only: on Linux the same path is just a
+        // relative dir that fails to open (covered by the errors test).
+        let refused = TargetReport {
+            root: PathBuf::from(r"\\no-such-host\share\target"),
+            profiles: vec![bare_profile(
+                PathBuf::from(r"\\no-such-host\share\target\debug"),
+                ProfileLayout::LegacyBuild,
+            )],
+            root_pools: Default::default(),
+        };
+        let mut audit = Vec::new();
+        let totals = run_sweep(&[refused], "test", &mut audit);
+        assert!(
+            all_notes(&totals).contains("refused (network filesystem)"),
+            "{}",
+            all_notes(&totals)
+        );
         assert_eq!(totals.freed_bytes, 0);
     }
 }
