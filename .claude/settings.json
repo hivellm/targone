@@ -1,0 +1,58 @@
+{
+  "env": {
+    "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS": "1"
+  },
+  "permissions": {
+    "allow": [
+      "Bash(*)",
+      "Read(*)",
+      "Edit(*)",
+      "Write(*)",
+      "Glob(*)",
+      "Grep(*)",
+      "Agent(*)",
+      "WebFetch(*)",
+      "WebSearch",
+      "TodoWrite",
+      "mcp__rulebook",
+      "WebFetch(domain:api.github.com)",
+      "WebFetch(domain:rustc-dev-guide.rust-lang.org)",
+      "WebFetch(domain:releases.rs)",
+      "WebFetch(domain:blog.rust-lang.org)",
+      "WebFetch(domain:reproducible-builds.org)",
+      "WebFetch(domain:kobzol.github.io)",
+      "WebFetch(domain:kunobi.ninja)",
+      "Bash(curl -sL \"https://raw.githubusercontent.com/rust-lang/cargo/master/src/cargo/core/compiler/layout.rs\" -o /tmp/layout.rs)",
+      "Bash(curl -sL \"https://raw.githubusercontent.com/rust-lang/cargo/master/src/compiler/layout.rs\" -o /tmp/layout.rs)",
+      "Bash(curl -sL \"https://raw.githubusercontent.com/rust-lang/cargo/19112f96270d68fc834ce94bccf789c463078312/src/compiler/layout.rs\" -o /tmp/layout.rs)",
+      "PowerShell(& 'C:\\\\Users\\\\Bolado\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\e--HiveLLM-Targone\\\\f4af93d1-2bdd-4c43-b8ae-4c5dc9e84861\\\\scratchpad\\\\scan-inc.ps1' -Inc 'E:\\\\HiveLLM\\\\Cortex\\\\target\\\\debug\\\\incremental')",
+      "Bash(curl -sL \"https://raw.githubusercontent.com/rust-lang/cargo/19112f96270d68fc834ce94bccf789c463078312/src/util/rustc.rs\")",
+      "Bash(curl -sL \"https://raw.githubusercontent.com/rust-lang/cargo/19112f96270d68fc834ce94bccf789c463078312/src/context/mod.rs\")",
+      "PowerShell(& 'C:\\\\Users\\\\Bolado\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\e--HiveLLM-Targone\\\\f4af93d1-2bdd-4c43-b8ae-4c5dc9e84861\\\\scratchpad\\\\scan-policy.ps1' -Target 'E:\\\\HiveLLM\\\\Cortex\\\\target')",
+      "Bash(curl -s -A \"research\" \"https://crates.io/api/v1/crates/dua-cli\")",
+      "Bash(python -c ' *)",
+      "Bash(curl -sL \"https://raw.githubusercontent.com/iamsauravsharma/cargo-trim/master/README.MD\")",
+      "Bash(curl -sL \"https://raw.githubusercontent.com/iamsauravsharma/cargo-trim/master/README.md\")",
+      "PowerShell(& 'C:\\\\Users\\\\Bolado\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\e--HiveLLM-Targone\\\\f4af93d1-2bdd-4c43-b8ae-4c5dc9e84861\\\\scratchpad\\\\scan-atime.ps1' -Deps 'E:\\\\HiveLLM\\\\Cortex\\\\target\\\\debug\\\\deps')",
+      "Bash(mkdir -p \"E:/HiveLLM/Targone/docs/analysis/target-dir-disk-reduction\" && ls -la \"E:/HiveLLM/Targone/docs/analysis\")",
+      "PowerShell(& 'C:\\\\Users\\\\Bolado\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\e--HiveLLM-Targone\\\\f4af93d1-2bdd-4c43-b8ae-4c5dc9e84861\\\\scratchpad\\\\scan-horizontal.ps1')"
+    ],
+    "defaultMode": "acceptEdits",
+    "additionalDirectories": [
+      "E:\\HiveLLM\\Targone\\docs\\analysis"
+    ]
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash $CLAUDE_PROJECT_DIR/.claude/hooks/protect-task-scaffolding.sh"
+          }
+        ]
+      }
+    ]
+  }
+}
