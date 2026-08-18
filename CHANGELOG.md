@@ -84,10 +84,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   lock-skipped.
 - Interrupt gate: sweeper killed 120 ms into a live deletion; the target dir
   remained buildable and converged fresh.
-- First real-machine sweeps applied (audited): `nexus_smoke` 31.4 MiB
-  reclaimed across two self-healing passes; full Cortex sweep in progress.
+- Interrupt gate: sweeper killed 120 ms into a live deletion; the target dir
+  remained buildable and converged fresh.
+- **Full real-machine sweep (audited): ~252.5 GiB reclaimed** across 16
+  target dirs in three passes — Cortex alone went 172.0 → 19.1 GiB (−89%);
+  a live build on ar-v3-dashboard was correctly lock-skipped on pass one and
+  reclaimed 36.5 GiB on the next; Defender-held residue self-healed via the
+  re-collection rule. The one post-sweep `cargo check` failure investigated
+  traced to uncommitted work-in-progress source in the swept project
+  (name-resolution error — impossible to cause by artifact deletion).
 - Read-only `report` on the reference machine: 303.6 GiB total,
   248.5 GiB reclaimable across 16 directories in ~20 s — deliberately on the
   conservative side of the analysis's 257.7 GB Policy A.
+
+### Added — recurrence & adoption (Phases 3–4)
+
+- Machine registry (`$CARGO_HOME/targone/registry.jsonl`, append-only JSONL,
+  read-time compaction, orphan detection) and machine config
+  (`config.toml`: scan roots, optional global budget).
+- Budget engine: ordering-and-stopping over reclaimable bytes only;
+  unreachable budgets reported, never implied met.
+- `cargo targone scan` — adopts projects into the registry (16 adopted on
+  the reference machine); `cargo targone schedule install|uninstall|status|
+  run` — per-user Task Scheduler registration, non-elevated, daily 03:00 +
+  only-if-idle + battery-friendly + missed-run catch-up; systemd user timer
+  and launchd recipes; `TARGONE_DISABLE=1`/CI are hard no-ops; last-run
+  summary persisted for `status`. Install/uninstall verified idempotent.
+- **`targone` beacon crate**: zero dependencies; its build script appends one
+  registry line and exits — never deletes, never spawns, no network, no
+  rerun-if directives; hard no-op under `DOCS_RS`/`TARGONE_DISABLE`/`CI`;
+  engine-missing hint at most once per day. Live-verified: its real
+  registration parsed by the engine. (Deviation from the phase-4 proposal:
+  the beacon does not touch the scheduler — that would violate the
+  no-spawned-processes invariant.)
 
 [Unreleased]: https://github.com/hivellm/targone/commits/main

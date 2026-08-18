@@ -8,10 +8,10 @@
 - [x] 2.2 Budget measured only over deletable pools — regression test encoding cargo-sweep's F-034 mistake as a must-not
 
 ## 3. Scheduler integration
-- [ ] 3.1 `cargo targone schedule install|status|uninstall`: Task Scheduler (Windows) idempotent registration, idle-triggered daily; exact rights model per spike 0.6
+- [x] 3.1 `cargo targone schedule install|status|uninstall`: Task Scheduler (Windows) idempotent registration, idle-triggered daily; exact rights model per spike 0.6
 - [x] 3.2 systemd user timer (Linux) + launchd (macOS) equivalents
 - [x] 3.3 Scheduled entry point: silent, budget-driven `gc --apply` with audit log; `TARGONE_DISABLE=1` and CI detection → hard no-op
-- [ ] 3.4 Uninstall leaves no scheduler entry, no daemon, no stray files
+- [x] 3.4 Uninstall leaves no scheduler entry, no daemon, no stray files
 
 ## 4. Verification gates
 - [ ] 4.1 Survives reboot; runs unattended for a week on the reference machine; aggregate stays under budget
