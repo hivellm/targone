@@ -119,12 +119,14 @@
       "PowerShell($D = 'E:\\\\HiveLLM\\\\Targone\\\\target\\\\debug\\\\cargo-targone.exe'; & $D scan E:\\\\HiveLLM\\\\Targone; Write-Host '---'; & $D schedule status)",
       "PowerShell(Push-Location E:\\\\HiveLLM\\\\Targone; cargo build -p cargo-targone 2>&1 | Select-Object -Last 1; Pop-Location; $D = 'E:\\\\HiveLLM\\\\Targone\\\\target\\\\debug\\\\cargo-targone.exe'; & $D scan E:\\\\HiveLLM\\\\Targone; Write-Host '---'; & $D schedule status)",
       "PowerShell(Get-Process cargo-targone -ErrorAction SilentlyContinue | Where-Object { $_.Path -match 'release' } | ForEach-Object { 'release sweeper still running' }; Get-Content 'C:\\\\Users\\\\Bolado\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\e--HiveLLM-Targone\\\\f4af93d1-2bdd-4c43-b8ae-4c5dc9e84861\\\\tasks\\\\bibfvkpyb.output' -ErrorAction SilentlyContinue)",
-      "PowerShell(Get-Process | Where-Object { $_.ProcessName -eq 'cargo-targone' } | Select-Object Id, ProcessName, CPU)"
+      "PowerShell(Get-Process | Where-Object { $_.ProcessName -eq 'cargo-targone' } | Select-Object Id, ProcessName, CPU)",
+      "PowerShell($f = 'E:\\\\HiveLLM\\\\Targone\\\\.rulebook\\\\tasks\\\\phase3_scheduler-recurrence\\\\tasks.md'; $c = Get-Content $f -Raw; foreach \\($n in @\\('1.1 Registry module','1.2 Machine config','1.3 Discovery reads registry','2.1 Global budget','2.2 Budget measured','3.2 systemd user timer','3.3 Scheduled entry point'\\)\\) { $c = $c -replace [regex]::Escape\\(\"- [ ] $n\"\\), \"- [x] $n\" }; Set-Content $f $c -NoNewline; 'ok')"
     ],
     "defaultMode": "acceptEdits",
     "additionalDirectories": [
       "E:\\HiveLLM\\Targone\\docs\\analysis",
-      "E:\\HiveLLM\\Targone\\\n# Rust\n"
+      "E:\\HiveLLM\\Targone\\\n# Rust\n",
+      "C:\\Users\\Bolado\\.cargo\\targone"
     ]
   },
   "hooks": {

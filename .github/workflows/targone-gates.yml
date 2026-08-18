@@ -1,0 +1,27 @@
+# Targone-specific verification gates (user-owned; not rulebook-managed).
+# The concurrency gate is the phase-2 deliverable: 100 real cargo builds
+# against a continuous in-process sweep loop, zero failures allowed.
+name: Targone Gates
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ '**' ]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  concurrency-gate:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ ubuntu-latest, windows-latest ]
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Concurrency gate (100 builds vs sweep loop)
+        run: cargo test -p targone-core --test concurrency_gate -- --ignored --nocapture
