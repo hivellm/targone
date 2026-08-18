@@ -189,8 +189,8 @@ None. Zero top-level files, zero unmatchable names, in all four roots.
   do this). A backup/restore that rewrites mtimes would skew newest
   selection; the base36 timestamp inside session names is the fallback key.
 - Cross-package collision check parsed source-tree file stems
-  (`tests|benches|examples/*.rs`, hyphens normalized to `_`), not cargo
-  metadata; `src/bin/` stems were not checked (none of the observed crate
-  names look bin-shaped and lib/bin names share the package namespace, but
-  a follow-up `cargo metadata --format-version 1` target listing would
-  close that gap).
+  (`tests|benches|examples/*.rs` and `src/bin/*.rs`, hyphens normalized to
+  `_`), not cargo metadata: 0 cross-package duplicates in any workspace
+  (Cortex has 16 `src/bin` stems, all unique; Thunder and ar-v3 have none).
+  A `cargo metadata` target listing would be the authoritative version of
+  this check if the tool ever wants to verify per-workspace.

@@ -21,15 +21,50 @@ pub fn split_hash_suffix(name: &str) -> Option<(&str, &str)> {
 
 /// Extract the unit hash from an artifact file name: take the part before the
 /// first `.` (drops `.rlib`, `.dll.lib`, …), then the trailing `-<16hex>`.
+/// Hash-less names are a *known* class, not noise: MSVC plain-bin outputs
+/// (`cortex_api.exe`) carry no hash (spike 0.3) and are always kept.
 pub fn artifact_hash(file_name: &str) -> Option<&str> {
     let stem = file_name.split('.').next().unwrap_or(file_name);
     split_hash_suffix(stem).map(|(_, h)| h)
 }
 
+/// The extension chain of an artifact file name: everything after the first
+/// `.` (`"rlib"`, `"dll.lib"`, `"d"`), or `""` for extension-less files.
+pub fn extension_chain(file_name: &str) -> &str {
+    match file_name.split_once('.') {
+        Some((_, ext)) => ext,
+        None => "",
+    }
+}
+
+/// True for fingerprint-dir *state* files — the ones that name the unit
+/// (`lib-serde`, `bin-app`, `run-build-script-build-script-build`) as opposed
+/// to metadata (`invoked.timestamp`, `*.json`, `dep-*`, `output-*`).
+fn is_state_file(name: &str) -> bool {
+    name != "invoked.timestamp"
+        && !name.ends_with(".json")
+        && !name.starts_with("dep-")
+        && !name.starts_with("output-")
+}
+
+/// The sorted set of state-file names inside a fingerprint directory — the
+/// unit-identity component of the grouping key. A multi-bin package keeps all
+/// its `bin-*` fingerprints in ONE dir (spike 0.3 finding 3), so the file SET,
+/// not any single file, is the identity.
+pub fn unit_state_files<'a, I: IntoIterator<Item = &'a str>>(files: I) -> Vec<String> {
+    let mut out: Vec<String> = files
+        .into_iter()
+        .filter(|f| is_state_file(f))
+        .map(str::to_string)
+        .collect();
+    out.sort();
+    out
+}
+
 /// Unit kind, derived from the file names inside a fingerprint directory.
-/// Distinct kinds of the same package are distinct units with distinct hashes
-/// (the "package shows up twice" property), so recency grouping must key on
-/// `(package, kind)` — never on package alone.
+/// Used for tier attribution; identity grouping uses [`unit_state_files`]
+/// plus the artifact class (spike 0.3: check-mode and build-mode fingerprints
+/// of the same unit are distinct live identities).
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum UnitKind {
@@ -52,11 +87,7 @@ pub enum UnitKind {
 pub fn unit_kind_from_files<'a, I: IntoIterator<Item = &'a str>>(files: I) -> Option<UnitKind> {
     let mut best: Option<UnitKind> = None;
     for f in files {
-        // Skip metadata files: the kind marker is the bare state file.
-        if f == "invoked.timestamp" || f.ends_with(".json") {
-            continue;
-        }
-        if f.starts_with("dep-") || f.starts_with("output-") {
+        if !is_state_file(f) {
             continue;
         }
         let kind = if f.starts_with("run-build-script") {
@@ -133,6 +164,30 @@ mod tests {
         );
         // uplifted binaries carry no hash — fail-open
         assert_eq!(artifact_hash("spike05_split.exe"), None);
+    }
+
+    #[test]
+    fn extension_chains() {
+        assert_eq!(extension_chain("libserde-1e3ae50c54bba662.rlib"), "rlib");
+        assert_eq!(extension_chain("x-1e3ae50c54bba662.dll.lib"), "dll.lib");
+        assert_eq!(extension_chain("probe-1e3ae50c54bba662"), "");
+    }
+
+    #[test]
+    fn state_files_are_sorted_and_filtered() {
+        assert_eq!(
+            unit_state_files([
+                "lib-serde.json",
+                "invoked.timestamp",
+                "dep-lib-serde",
+                "lib-serde",
+            ]),
+            vec!["lib-serde".to_string()]
+        );
+        assert_eq!(
+            unit_state_files(["bin-b", "bin-a", "bin-a.json"]),
+            vec!["bin-a".to_string(), "bin-b".to_string()]
+        );
     }
 
     #[test]
