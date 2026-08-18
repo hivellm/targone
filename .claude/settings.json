@@ -35,7 +35,15 @@
       "Bash(curl -sL \"https://raw.githubusercontent.com/iamsauravsharma/cargo-trim/master/README.md\")",
       "PowerShell(& 'C:\\\\Users\\\\Bolado\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\e--HiveLLM-Targone\\\\f4af93d1-2bdd-4c43-b8ae-4c5dc9e84861\\\\scratchpad\\\\scan-atime.ps1' -Deps 'E:\\\\HiveLLM\\\\Cortex\\\\target\\\\debug\\\\deps')",
       "Bash(mkdir -p \"E:/HiveLLM/Targone/docs/analysis/target-dir-disk-reduction\" && ls -la \"E:/HiveLLM/Targone/docs/analysis\")",
-      "PowerShell(& 'C:\\\\Users\\\\Bolado\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\e--HiveLLM-Targone\\\\f4af93d1-2bdd-4c43-b8ae-4c5dc9e84861\\\\scratchpad\\\\scan-horizontal.ps1')"
+      "PowerShell(& 'C:\\\\Users\\\\Bolado\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\e--HiveLLM-Targone\\\\f4af93d1-2bdd-4c43-b8ae-4c5dc9e84861\\\\scratchpad\\\\scan-horizontal.ps1')",
+      "PowerShell(Remove-Item -Recurse -Force E:\\\\HiveLLM\\\\Targone\\\\docs\\\\analysis\\\\target-dir-gc -Confirm:$false)",
+      "PowerShell(Get-ChildItem -Recurse E:\\\\HiveLLM\\\\Targone\\\\docs | Select-Object -ExpandProperty FullName; \\(Get-Item E:\\\\HiveLLM\\\\Targone\\\\README.md\\).Length; \\(Get-Item E:\\\\HiveLLM\\\\Targone\\\\LICENSE\\).Length)",
+      "Read(//e/HiveLLM/Nexus/.rulebook/tasks/phase21_tck-non-finite-floats/**)",
+      "PowerShell(git -C E:\\\\HiveLLM\\\\Targone init -b main)",
+      "PowerShell(git -C E:\\\\HiveLLM\\\\Targone status --short)",
+      "PowerShell(git -C E:\\\\HiveLLM\\\\Targone log --oneline -5 2>$null)",
+      "PowerShell(git -C E:\\\\HiveLLM\\\\Targone branch --show-current)",
+      "PowerShell(git -C E:\\\\HiveLLM\\\\Targone diff .claude/settings.json)"
     ],
     "defaultMode": "acceptEdits",
     "additionalDirectories": [

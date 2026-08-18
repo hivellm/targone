@@ -3,18 +3,21 @@
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 [![Rust](https://img.shields.io/badge/rust-stable%20(1.89%2B)-orange.svg)](https://www.rust-lang.org/)
 [![Status](https://img.shields.io/badge/status-phase%200%20(analysis%20complete)-yellow.svg)](#-project-status)
-[![Analysis](https://img.shields.io/badge/analysis-8%20documents-blue.svg)](docs/analysis/target-dir-gc/00-README.md)
+[![Analysis](https://img.shields.io/badge/analysis-70%20findings%20%C2%B7%2010%20documents-blue.svg)](docs/analysis/target-dir-disk-reduction/00-README.md)
 
 > **`target/`, gone. Automatic, safe garbage collection for Rust build directories — across every project on your machine.**
 
 Every Rust project's `target/` directory grows forever: Cargo never garbage-collects it, every
-toolchain update and dependency bump orphans the previous artifact set, and on a machine with many
-projects the waste compounds to **terabytes**. The only stock answer is `cargo clean` — manual,
-per-project, all-or-nothing, and it throws away your warm builds.
+dependency bump and toolchain update orphans the previous artifact set, and on a machine with many
+projects the waste compounds to hundreds of GB — measured here: **300.5 GB across 18 target
+directories, 91% of it in just 3 projects, 65–74% of it in `incremental/` caches that nothing will
+ever read again**. The only stock answer is `cargo clean` — manual, per-project, all-or-nothing,
+and it throws away your warm builds. (The correct tool, `cargo-sweep`, was installed on this very
+machine — and never run. The gap is not algorithms; it is *automatic invocation*.)
 
-Targone bounds that growth automatically: add one crate to each project, install one engine on the
-machine, and the problem manages itself — selectively, under a disk budget, without ever racing a
-live build.
+Targone bounds that growth automatically: add one crate to each project, and the problem manages
+itself — selectively, under a global disk budget, without ever racing a live build. Measured
+target on the reference machine: **300.8 GB → ~43 GB (85.7% reclaimed) with zero cold rebuilds**.
 
 Part of the [HiveLLM](https://github.com/hivellm) family (Nexus · Fluxum · Synap · Vectorizer).
 
@@ -23,70 +26,73 @@ Part of the [HiveLLM](https://github.com/hivellm) family (Nexus · Fluxum · Syn
 ## 🎯 Overview
 
 ```
-Without Targone                        With Targone
-─────────────────────                  ──────────────────────────────────────
-proj-a/target/   180 GB  ← stale       targone (dep, per project)
-proj-b/target/   240 GB  ← stale         │ build.rs: registers project +
-proj-c/target/    95 GB  ← deleted       │ activity ping (~1ms, never deletes)
-…                                        ▼
-  Σ = TBs on the SSD                   ~/.targone/registry
-                                         │
-manual `cargo clean` ×N                  ▼  scheduled (Task Scheduler /
-  = cold rebuilds, forgotten           cargo-targone (engine, per machine)
-    projects keep their GBs              • takes Cargo's real build locks
-                                         • tiered GC under a disk budget
-                                         • orphan & idle project reclaim
-                                       Σ stays bounded, warm builds stay warm
+Without Targone                          With Targone
+─────────────────────                    ─────────────────────────────────────────
+Cortex/target      172 GB  ← 74% stale   targone (crates.io dep, per project)
+Thunder/target      57 GB  ← 69% stale     │ build.rs beacon: registers the project
+dashboard/target    45 GB  ← 67% stale     │ (~once ever, never deletes, never spawns)
+…                                          ▼
+  Σ = 300 GB and growing                 registry — $CARGO_HOME/targone/registry.jsonl
+                                           │
+manual `cargo clean` ×N                    ▼
+  = cold rebuilds, and forgotten         OS scheduler (Task Scheduler / systemd / launchd)
+    projects keep their GBs forever        │ the only source of recurrence
+                                           ▼
+                                         cargo-targone + targone-core (per machine)
+                                           • acquires Cargo's own .cargo-build-lock
+                                           • keep-newest-per-identity sweep, per tier
+                                           • ordered by reclaimable bytes, global budget
+                                         Σ stays bounded, warm builds stay warm
 ```
 
-**Two parts, one product:**
+**Beacon → registry → scheduler → sweeper.** Each part does the one thing it is structurally
+capable of doing safely:
 
-- **`targone`** — the crates.io module you add to each project. Its build script does exactly one
-  thing: append the project + timestamp to a local machine registry (~1ms, fail-silent, no
-  network, no deletion, auditable in five minutes). It is the adoption interface and the activity
-  signal — never the executioner.
-- **`cargo-targone`** — the engine, installed once (`cargo install cargo-targone`). Runs on a
-  schedule, takes **Cargo's own file locks** (`.cargo-build-lock` — no other tool in the ecosystem
-  does this) so it can never corrupt a concurrent build, and applies tiered policies until your
-  disk budget is met.
+- **`targone`** — the dependency you `cargo add`. Its build script appends the project to a local
+  registry and exits (< 50 ms, fail-silent, no network, no deletion, no spawned processes —
+  auditable in five minutes). It is the adoption interface, deliberately not load-bearing.
+- **`cargo-targone` / `targone-core`** — the engine, installed once. Invoked by the OS scheduler,
+  it takes **Cargo's real build locks** before touching a profile directory (no existing tool
+  does this), classifies artifacts by identity-recency, and deletes only what a future build can
+  provably never use.
 
-## ✨ Features (per the accepted design — see [analysis](docs/analysis/target-dir-gc/00-README.md))
+## ✨ Design highlights (all measured or source-verified — see the [analysis](docs/analysis/target-dir-disk-reduction/00-README.md))
 
 ### 🔒 Safe by construction
-- **Lock-honest** — byte-compatible with Cargo 1.96+'s lock protocol via `std` file locks; a
-  running build blocks Targone, never the reverse (`try_lock` → skip, never wait, never race)
-- **Rebuild-worst-case** — deletion ordering (fingerprints before artifacts) guarantees the worst
-  possible outcome of any GC action is a rebuild, never a corrupted or silently-wrong build
-- **Windows first-class** — share-mode deletes, rename-then-delete fallback, retry-with-backoff,
-  mmap/AV tolerance; primary dev platform, tested in CI
-- **Dry-run and journaled** — `--dry-run` default-on in the first release; every pass journaled
+- **Lock-honest** — byte-compatible with Cargo 1.96+'s `.cargo-build-lock` protocol via std file
+  locks; a running build blocks Targone, never the reverse; network filesystems are refused
+- **Rebuild-worst-case** — fail-open classification: anything not positively identified as
+  superseded is kept; the worst outcome of any sweep is a re-link or one slower compile
+- **Windows first-class** — share-violation tolerance, mmap/AV/running-exe awareness,
+  metadata-only scanning (a scan must not destroy the atime signal it reads)
+- **Dry-run default** — `--apply` required to delete; append-only audit log of every removal
 
-### 🧠 Smart, not destructive
-- **Tiered policies under a disk budget** — incremental-cache pruning → stale-toolchain sweep
-  (every rustup update silently doubles your target dirs) → build-driven mark & sweep →
-  idle-project wipe → orphaned-dir reclaim, escalating only as the budget demands
-- **No dead signals** — no atime/mtime heuristics (the 8-year-old failure mode of prior tools);
-  decisions key on fingerprint toolchain hashes, Cargo's `--message-format=json` artifact
-  live-sets, and the activity registry
-- **Dual-layout aware** — supports both the legacy `target/` layout and Cargo's build-dir
-  layout v2 (default from ~1.99)
+### 🧠 The right policy, proven on real data
+- **Identity-recency, not age** — "keep the newest N per identity key" has no cliff: age-based
+  rules provably degenerate into `cargo clean` (100% of a warm cache gone at day 8) while never
+  touching the bloat of daily-built projects
+- **`incremental/` first** — 41× duplication measured (8,113 dirs for 196 crates); keep-newest-1
+  reclaims 96.9% of the largest byte pool at zero correctness cost
+- **`deps/` surgically** — only `.rlib`/`.rmeta` keep builds warm (4.1 GB of 42.4 GB measured);
+  stale test binaries and PDBs are terminal outputs nothing reads back
+- **Global budget as trigger, not rule** — directories processed in descending reclaimable-bytes
+  order until the machine fits the budget; no uniform per-project quotas
 
-### 📉 The horizontal problem too
-- **Central build-dir migration (opt-in)** — one command moves ~90% of every project's bytes into
-  a single GC-able root via stable `build.build-dir` (measured upstream: 4.2 GB → 415 MB for
-  cargo itself), with per-workspace isolation — none of the shared-`CARGO_TARGET_DIR` correctness
-  bugs
-- **Whole-machine visibility** — `cargo targone status`: per-project size, idleness, and what the
-  next pass reclaims; `scan` finds forgotten projects and orphaned target dirs
+### 🚫 Anti-requirements (things Targone will never do)
+- Never delete from inside a build script — structurally unsafe, and upstream has refused the
+  hooks that could make it safe for a decade
+- Never a shared `CARGO_TARGET_DIR` — measured benefit on this fleet: 5.4%; correctness bugs and
+  lock contention: real
+- Never a resident daemon, never network access, never auto-edit of your manifests
 
 ## 🚀 Planned CLI
 
 ```bash
 cargo install cargo-targone
-cargo targone setup          # scheduled task + machine config (+ --central-build-dir)
-cargo targone status         # who is eating the SSD, and what a pass would reclaim
-cargo targone gc --dry-run   # one pass, tiered, honest
-cargo targone scan E:\code   # adopt unregistered / orphaned target dirs
+cargo targone report                    # who is eating the SSD; reclaimable bytes per tier
+cargo targone gc --dry-run              # what a sweep would do (dry-run is the default)
+cargo targone gc --apply                # do it, under the lock protocol
+cargo targone schedule install          # Task Scheduler / systemd timer / launchd — set & forget
 ```
 
 ```toml
@@ -99,23 +105,27 @@ targone = "0.1"
 
 | Phase | Scope | Status |
 |---|---|---|
-| Phase 0 — problem statement + full solution-space analysis | ✅ **Done** — [8 documents](docs/analysis/target-dir-gc/00-README.md) |
-| Phase 1 — engine core: locking, dual-layout probe, incremental + toolchain tiers, orphan reclaim, `status`/`scan` | ⏳ Next |
-| Phase 2 — set-and-forget: schedulers, size budget, idleness tiers | ⏳ |
-| Phase 3 — `targone` registration crate (crates.io module) | ⏳ |
-| Phase 4 — mark & sweep precision tier, central build-dir migration | ⏳ |
+| Phase 0 — problem statement, measurements, full solution-space analysis (70 findings) | ✅ **Done** — [10 documents](docs/analysis/target-dir-disk-reduction/00-README.md) |
+| Phase 0.x — de-risking spikes (lock-under-load, Unix probes, fingerprint liveness) | ⏳ Next |
+| Phase 1 — `targone-core` + read-only `report` (reproduces the measurements) | ⏳ |
+| Phase 2 — deletion under the lock protocol (the 257.7 GB phase) | ⏳ |
+| Phase 3 — recurrence via OS scheduler + global budget | ⏳ |
+| Phase 4 — the `targone` beacon crate on crates.io | ⏳ |
+| Phase 5 — opt-in tiers (PDB drop, dormant dirs, uninstalled toolchains, PATH shim) | ⏳ |
 
 ## 📚 Documentation
 
 - [Problem statement](docs/problem-statement.md) — why this project exists
-- [Analysis index](docs/analysis/target-dir-gc/00-README.md) — findings in one page + verdict
-  - [01 — Why `target/` grows without bound](docs/analysis/target-dir-gc/01-problem-mechanics.md)
-  - [02 — Prior art (cargo-sweep, kondo, sccache, …)](docs/analysis/target-dir-gc/02-prior-art.md)
-  - [03 — Cargo's own GC roadmap and timeline](docs/analysis/target-dir-gc/03-cargo-roadmap.md)
-  - [04 — Integration mechanisms, with verdicts](docs/analysis/target-dir-gc/04-integration-mechanisms.md)
-  - [05 — Locking and safe deletion](docs/analysis/target-dir-gc/05-locking-and-safety.md)
-  - [06 — Cleanup policy catalog](docs/analysis/target-dir-gc/06-cleanup-policies.md)
-  - [07 — Recommended architecture](docs/analysis/target-dir-gc/07-recommended-architecture.md)
+- [Analysis index](docs/analysis/target-dir-disk-reduction/00-README.md) — 70 findings in ten bullets + verdict
+  - [01 — Measurements: what is actually on this disk](docs/analysis/target-dir-disk-reduction/01-measurements.md)
+  - [02 — Anatomy & growth: where the bytes live](docs/analysis/target-dir-disk-reduction/02-anatomy-and-growth.md)
+  - [03 — Integration mechanisms, with experiments](docs/analysis/target-dir-disk-reduction/03-integration-mechanisms.md)
+  - [04 — Prior art (cargo-sweep, kondo, sccache, …)](docs/analysis/target-dir-disk-reduction/04-prior-art.md)
+  - [05 — Policies, simulated on real data](docs/analysis/target-dir-disk-reduction/05-policies.md)
+  - [06 — Safety & concurrency](docs/analysis/target-dir-disk-reduction/06-safety-and-concurrency.md)
+  - [07 — Recommended architecture](docs/analysis/target-dir-disk-reduction/07-architecture-recommendation.md)
+  - [08 — Execution plan](docs/analysis/target-dir-disk-reduction/08-execution-plan.md)
+  - [09 — Cargo upstream roadmap](docs/analysis/target-dir-disk-reduction/09-cargo-upstream-roadmap.md)
 
 ## 📄 License
 
