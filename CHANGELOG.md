@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.2] - 2026-08-18
+
+No functional changes - validates the Trusted Publishing release pipeline
+end-to-end (v0.1.1 was published manually while the per-crate publisher
+configs were being fixed).
+
 ## [0.1.1] - 2026-08-18
 
 ### Added
@@ -99,8 +105,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   lock-skipped.
 - Interrupt gate: sweeper killed 120 ms into a live deletion; the target dir
   remained buildable and converged fresh.
-- Interrupt gate: sweeper killed 120 ms into a live deletion; the target dir
-  remained buildable and converged fresh.
 - **Full real-machine sweep (audited): ~252.5 GiB reclaimed** across 16
   target dirs in three passes — Cortex alone went 172.0 → 19.1 GiB (−89%);
   a live build on ar-v3-dashboard was correctly lock-skipped on pass one and
@@ -150,5 +154,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   identity-recency already subsumes it, F-046) and the PATH-shim trigger
   (post-1.0, higher blast radius).
 
+[0.1.2]: https://github.com/hivellm/targone/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/hivellm/targone/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/hivellm/targone/commits/v0.1.0
