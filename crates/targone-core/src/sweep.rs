@@ -131,19 +131,27 @@ fn audit_line(
 }
 
 /// Windows-transient errors worth retrying: sharing violations (32) and
-/// access-denied from AV scanners or delete-pending handles (5).
+/// access-denied from AV scanners or delete-pending handles (5). Measured on
+/// the reference machine: Windows Defender scans never-before-seen
+/// executables ON DELETE, holding handles for hundreds of ms to seconds —
+/// the dominant residue source for `build/` dirs. Residue that outlives the
+/// retry window is re-collected by the next run (the fingerprint-less
+/// artifact rule in `scan`), so the window is a latency/politeness knob,
+/// not a correctness one.
 fn retryable(e: &io::Error) -> bool {
     e.kind() == io::ErrorKind::PermissionDenied || matches!(e.raw_os_error(), Some(5) | Some(32))
 }
 
 fn with_retry(mut op: impl FnMut() -> io::Result<()>) -> io::Result<()> {
+    // 50 → 150 → 450 → 1350 ms between attempts: ~2 s total, enough for
+    // most Defender scan-on-delete holds without stalling a large sweep.
     let mut delay = Duration::from_millis(50);
     let mut last = None;
-    for attempt in 0..4 {
+    for attempt in 0..5 {
         match op() {
             Ok(()) => return Ok(()),
             Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(()),
-            Err(e) if attempt < 3 && retryable(&e) => {
+            Err(e) if attempt < 4 && retryable(&e) => {
                 std::thread::sleep(delay);
                 delay *= 3;
                 last = Some(e);
