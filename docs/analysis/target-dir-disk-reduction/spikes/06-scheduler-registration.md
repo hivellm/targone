@@ -138,7 +138,7 @@ opt-ins, not defaults.
 ## Evidence — Windows (empirical)
 
 Shell state: `Elevated (admin): False`, user `BOLADO\Bolado`, Windows
-10.0.19045. Locale is pt-BR — `ÊXITO` = SUCCESS, `ERRO` = ERROR,
+10.0.19045. Locale is pt-BR — `ÊXITO` = SUCCESS, `ERRO` = ERROR, <!-- codespell:ignore erro -->
 `AVISO` = WARNING in the captures below.
 
 ### 1. Non-elevated create — succeeds, no password
@@ -187,7 +187,7 @@ No password was prompted or supplied at any point in the spike.
 ÊXITO: ... criada corretamente.                                        [exit 0 — clean overwrite]
 
 > schtasks /Create ...             (no /F, task exists)
-AVISO: já existe uma tarefa com o nome "TargoneSpikeTest".
+AVISO: já existe uma tarefa com o nome "TargoneSpikeTest". <!-- codespell:ignore nome -->
 Deseja substituí-la (S/N)?                                             [exit 1]
 ```
 
@@ -275,7 +275,7 @@ design option, not just untested).
 > schtasks /Delete /TN TargoneSpikeTest /F
 ÊXITO: a tarefa agendada "TargoneSpikeTest" foi excluída corretamente. [exit 0]
 > schtasks /Query /TN TargoneSpikeTest
-ERRO: O sistema não pode encontrar o arquivo especificado.             [gone]
+ERRO: O sistema não pode encontrar o arquivo especificado.             [gone] <!-- codespell:ignore erro -->
 > Get-ScheduledTask | ? TaskName -like "TargoneSpike*"
 (count: 0)
 ```
