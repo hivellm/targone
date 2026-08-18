@@ -142,7 +142,10 @@
       "PowerShell($f = 'E:\\\\HiveLLM\\\\Targone\\\\crates\\\\cargo-targone\\\\tests\\\\cli.rs'; \\(Get-Content $f -Raw\\) -replace 'sholder', 'session_holder' | Set-Content $f -NoNewline; $w = 'E:\\\\HiveLLM\\\\Targone\\\\.github\\\\workflows\\\\codespell.yml'; \\(Get-Content $w -Raw\\) -replace 'crate,ser,deser,upToDate,optIn,shouldBe,Bloc', 'crate,ser,deser,upToDate,optIn,shouldBe,Bloc,erro,nome' | Set-Content $w -NoNewline; git -C E:\\\\HiveLLM\\\\Targone remote -v)",
       "PowerShell(Push-Location E:\\\\HiveLLM\\\\Targone; git checkout HEAD~1 -- .github/workflows/codespell.yml; $f = 'docs\\\\analysis\\\\target-dir-disk-reduction\\\\spikes\\\\06-scheduler-registration.md'; $c = Get-Content $f; foreach \\($i in @\\(141,190,278\\)\\) { \"line ${i}: $\\($c[$i-1]\\)\" }; Pop-Location)",
       "PowerShell(Start-Sleep -Seconds 30; $deadline = \\(Get-Date\\).AddMinutes\\(12\\); do { $runs = gh run list --repo hivellm/targone --commit a966f69 --json name,status,conclusion 2>$null | ConvertFrom-Json; $pending = @\\($runs | Where-Object { $_.status -ne 'completed' }\\).Count; if \\($pending -eq 0 -and $runs.Count -gt 0\\) { break }; Start-Sleep -Seconds 20 } while \\(\\(Get-Date\\) -lt $deadline\\); $runs | ForEach-Object { \"$\\($_.name\\): $\\($_.status\\) $\\($_.conclusion\\)\" })",
-      "PowerShell(gh run list --repo hivellm/targone --limit 10 2>&1)"
+      "PowerShell(gh run list --repo hivellm/targone --limit 10 2>&1)",
+      "PowerShell(gh run view --job 95687576743 --repo hivellm/targone --log-failed 2>&1)",
+      "PowerShell($log = gh run view 32129595598 --repo hivellm/targone --log-failed 2>&1 | Out-String; \\($log -split \"`n\"\\) | Where-Object { $_ -match 'FAILED|panicked|Summary \\\\[' } | Select-Object -First 20)",
+      "PowerShell($log = gh run view --job 95687576743 --repo hivellm/targone --log 2>&1 | Out-String; \\($log -split \"`n\"\\) | Where-Object { $_ -match 'FAILED|panicked|Summary \\\\[|error:' } | Select-Object -First 12; Write-Host '=== macos ==='; $log2 = gh run view --job 95687576806 --repo hivellm/targone --log 2>&1 | Out-String; \\($log2 -split \"`n\"\\) | Where-Object { $_ -match 'FAILED|panicked|Summary \\\\[|error:' } | Select-Object -First 12)"
     ],
     "defaultMode": "acceptEdits",
     "additionalDirectories": [

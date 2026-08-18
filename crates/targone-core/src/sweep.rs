@@ -295,6 +295,9 @@ mod tests {
         assert!(log.contains("skipped-session-lock"));
     }
 
+    // UNC semantics are Windows-only; on Unix the same literal is a plain
+    // relative path (network detection there needs a real NFS/SMB mount).
+    #[cfg(windows)]
     #[test]
     fn sweep_refuses_network_paths() {
         let report = crate::scan::ProfileReport {
