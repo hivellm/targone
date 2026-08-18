@@ -1,0 +1,21 @@
+[package]
+name = "cargo-targone"
+description = "Automatic, safe garbage collection for Rust target directories — the Targone engine"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[[bin]]
+name = "cargo-targone"
+path = "src/main.rs"
+
+[dependencies]
+targone-core.workspace = true
+clap.workspace = true
+serde_json.workspace = true
+
+[lints]
+workspace = true

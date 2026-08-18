@@ -1,0 +1,19 @@
+[package]
+name = "targone-core"
+description = "Discovery, layout probing, and classification of Rust target directories — the read-only core of Targone"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+walkdir.workspace = true
+serde.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true

@@ -29,3 +29,7 @@ tmp/
 
 CLAUDE.local.md
 .rulebook/backup/
+
+# Rust
+/target
+
